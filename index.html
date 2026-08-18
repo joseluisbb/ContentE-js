@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ContentE Web — Editor de Metadados Estruturais</title>
+  <link rel="stylesheet" href="src/styles/main.css">
+  <!-- Lucide Icons via Unpkg -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <!-- JSZip para descompactar .xlsx, .numbers e criar pacotes ZIP -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+  <!-- SheetJS para ler tabelas XLSX -->
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+</head>
+<body>
+  <div id="app">
+    <!-- Header Navbar -->
+    <header class="app-header">
+      <div class="brand">
+        <i data-lucide="book-open-check"></i>
+        <span>ContentE Web</span>
+        <span class="brand-badge">Ephemera Ready</span>
+      </div>
+      <div class="header-actions">
+        <button id="btnOpenFolder" class="btn" title="Abrir Pasta Local de Imagens">
+          <i data-lucide="folder-open"></i>
+          <span>Pasta Local</span>
+        </button>
+        <button id="btnOpenFiles" class="btn" title="Selecionar Ficheiros de Imagem">
+          <i data-lucide="images"></i>
+          <span>Imagens</span>
+        </button>
+        <button id="btnImportEphemera" class="btn" style="background: linear-gradient(135deg, #7c3aed, var(--accent-indigo)); color: white;">
+          <i data-lucide="file-spreadsheet"></i>
+          <span>Importar XLSX / Numbers</span>
+        </button>
+        <button id="btnExportHtmlPackage" class="btn btn-primary">
+          <i data-lucide="globe"></i>
+          <span>Gerar Objeto HTML</span>
+        </button>
+        <button id="btnExportMets" class="btn btn-success">
+          <i data-lucide="download"></i>
+          <span>Exportar METS XML</span>
+        </button>
+      </div>
+    </header>
+
+    <!-- Main Workspace Split View -->
+    <main class="workspace-main">
+      
+      <!-- Panel 1: Tree Hierarchy -->
+      <section class="panel">
+        <div class="panel-header">
+          <span><i data-lucide="folder-tree"></i> Estrutura Documental</span>
+          <span id="nodeCountBadge" class="tree-node-badge">0 nós</span>
+        </div>
+        <div class="panel-toolbar">
+          <button id="btnAddChild" class="btn btn-icon" title="Adicionar Nó Filho">
+            <i data-lucide="plus"></i>
+          </button>
+          <button id="btnMoveUp" class="btn btn-icon" title="Mover para Cima">
+            <i data-lucide="arrow-up"></i>
+          </button>
+          <button id="btnMoveDown" class="btn btn-icon" title="Mover para Baixo">
+            <i data-lucide="arrow-down"></i>
+          </button>
+          <button id="btnTreeRotateCCW" class="btn btn-icon" title="Rodar Imagem Selecionada 90° para a Esquerda">
+            <i data-lucide="rotate-ccw"></i>
+          </button>
+          <button id="btnTreeRotateCW" class="btn btn-icon" title="Rodar Imagem Selecionada 90° para a Direita">
+            <i data-lucide="rotate-cw"></i>
+          </button>
+          <button id="btnAutoDetectAll" class="btn btn-icon" title="Detetar Orientação de Todas as Imagens" style="color: var(--accent-indigo)">
+            <i data-lucide="wand-2"></i>
+          </button>
+          <button id="btnDeleteNode" class="btn btn-icon" title="Remover Nó" style="color: var(--accent-rose)">
+            <i data-lucide="trash-2"></i>
+          </button>
+        </div>
+        <div class="panel-content">
+          <div id="treeContainer" class="tree-container">
+            <!-- Renderização dinâmica da árvore pelo TreeManager -->
+          </div>
+        </div>
+      </section>
+
+      <!-- Panel 2: Central Image / Document Viewer -->
+      <section class="center-viewport">
+        <div class="viewer-toolbar">
+          <div style="display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">
+            <span id="viewerTitle" style="font-size: 0.85rem; font-weight: 500; color: var(--text-muted);">
+              Nenhum documento selecionado
+            </span>
+            <span id="rotationAngleBadge" class="tree-node-badge" style="background:#7c3aed; color:white;">Rotação: 0°</span>
+            <div id="orientationSuggestionContainer" style="display:none; align-items:center; gap:0.4rem;">
+              <span id="orientationSuggestionBadge" class="suggestion-badge">
+                <i data-lucide="sparkles" style="width:14px; height:14px;"></i>
+                <span id="orientationSuggestionText">Sugestão: Rodar 90°</span>
+              </span>
+              <button id="btnApplyOrientationSuggestion" class="btn btn-sm" style="background:#7c3aed; color:white; padding:0.2rem 0.5rem; font-size:0.75rem;">
+                Aplicar
+              </button>
+            </div>
+          </div>
+          <div style="display: flex; gap: 0.5rem; align-items: center;">
+            <button id="btnToggleMatrixView" class="btn" title="Alternar Vista em Matriz"><i data-lucide="grid"></i><span>Matriz</span></button>
+            <div id="individualViewerControls" style="display: flex; gap: 0.5rem; align-items: center;">
+              <button id="btnAutoDetect" class="btn" title="Analisar Orientação Recomendada para esta Imagem" style="background: var(--bg-hover); border: 1px solid var(--accent-indigo);">
+                <i data-lucide="wand-2" style="color: var(--accent-indigo);"></i>
+                <span>Analisar Orientação</span>
+              </button>
+              <button id="btnZoomIn" class="btn btn-icon" title="Ampliar"><i data-lucide="zoom-in"></i></button>
+              <button id="btnZoomOut" class="btn btn-icon" title="Reduzir"><i data-lucide="zoom-out"></i></button>
+              <button id="btnRotateCCW" class="btn btn-icon" title="Rodar 90° Esquerda"><i data-lucide="rotate-ccw"></i></button>
+              <button id="btnRotateCW" class="btn btn-icon" title="Rodar 90° Direita"><i data-lucide="rotate-cw"></i></button>
+            </div>
+          </div>
+        </div>
+
+        <div id="viewerCanvas" class="viewer-canvas">
+          <div class="empty-state">
+            <i data-lucide="image"></i>
+            <h3>Selecione uma Imagem ou Folha</h3>
+            <p>Importe um ficheiro .xlsx / .numbers da coleção Ephemera ou abra uma pasta local para visualizar o objeto.</p>
+          </div>
+        </div>
+
+        <!-- Thumbnail Ribbon -->
+        <div id="thumbRibbon" class="thumbnail-ribbon">
+          <!-- Miniaturas carregadas dinamicamente -->
+        </div>
+      </section>
+
+      <!-- Panel 3: Metadata & Inspector Panel -->
+      <section class="panel panel-right">
+        <div class="tabs">
+          <div class="tab active" data-tab="tab-metadata">Metadados</div>
+          <div class="tab" data-tab="tab-file">Ficheiro Digital</div>
+          <div class="tab" data-tab="tab-xml">Preview METS</div>
+        </div>
+
+        <div class="panel-content">
+          <!-- Tab 1: Metadados Descritivos -->
+          <div id="tab-metadata" class="tab-pane">
+            <form id="metadataForm">
+              <div class="form-group">
+                <label class="form-label">Tipo de Nó</label>
+                <select id="nodeTypeSelect" class="form-select"></select>
+              </div>
+              <div class="form-group">
+                <label class="form-label">Título / Designação (dc:title)</label>
+                <input type="text" id="metaTitle" class="form-input" placeholder="Ex: Capítulo 1 ou Capa">
+              </div>
+              <div class="form-group">
+                <label class="form-label">Autor / Origem (dc:creator)</label>
+                <input type="text" id="metaCreator" class="form-input" placeholder="Nome do autor ou origem">
+              </div>
+              <div class="form-group">
+                <label class="form-label">Data (dc:date)</label>
+                <input type="text" id="metaDate" class="form-input" placeholder="AAAA ou AAAA-MM-DD">
+              </div>
+              <div class="form-group">
+                <label class="form-label">Língua</label>
+                <select id="metaLanguage" class="form-select">
+                  <option value="por">Português (por)</option>
+                  <option value="eng">Inglês (eng)</option>
+                  <option value="spa">Espanhol (spa)</option>
+                  <option value="lat">Latim (lat)</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label class="form-label">Notas / Verso / Direitos (dc:rights)</label>
+                <textarea id="metaRights" class="form-textarea" placeholder="Condições, texto no verso ou notas"></textarea>
+              </div>
+            </form>
+          </div>
+
+          <!-- Tab 2: Ficheiro Digital -->
+          <div id="tab-file" class="tab-pane" style="display: none;">
+            <div class="form-group">
+              <label class="form-label">Ficheiro Associado</label>
+              <input type="text" id="fileMetaName" class="form-input" readonly value="Nenhum">
+            </div>
+            <div class="form-group">
+              <label class="form-label">Tamanho do Ficheiro</label>
+              <input type="text" id="fileMetaSize" class="form-input" readonly value="-">
+            </div>
+            <div class="form-group">
+              <label class="form-label">Tipo MIME</label>
+              <input type="text" id="fileMetaMime" class="form-input" readonly value="-">
+            </div>
+            <div class="form-group">
+              <label class="form-label">Dimensões da Imagem</label>
+              <input type="text" id="fileMetaDimensions" class="form-input" readonly value="-">
+            </div>
+            <div class="form-group">
+              <label class="form-label">Rotação Aplicada / Orientação</label>
+              <input type="text" id="fileMetaRotation" class="form-input" readonly value="0° (Padrão)">
+            </div>
+            <div class="form-group">
+              <label class="form-label">Checksum Hash (MD5 / SHA-256)</label>
+              <div style="display: flex; gap: 0.5rem;">
+                <input type="text" id="fileMetaHash" class="form-input" readonly value="Pendentes...">
+                <button id="btnCalcHash" class="btn" title="Calcular Hash"><i data-lucide="calculator"></i></button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Tab 3: Preview XML -->
+          <div id="tab-xml" class="tab-pane" style="display: none;">
+            <p style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 0.5rem;">
+              Preview do ficheiro METS XML a ser gerado em tempo real:
+            </p>
+            <pre id="xmlPreview" class="code-block"></pre>
+          </div>
+        </div>
+      </section>
+
+    </main>
+
+    <!-- Footer Status Bar -->
+    <footer class="status-bar">
+      <div class="status-item">
+        <span class="status-dot"></span>
+        <span id="statusMessage">Pronto (Identificadores & Matriz de Entrada Ativos)</span>
+      </div>
+      <div class="status-item">
+        <span id="statusFolder">Pronto para importar ficheiros Ephemera</span>
+      </div>
+    </footer>
+  </div>
+
+  <!-- Modal Adicionar Nó -->
+  <div id="modalAddNode" class="modal-backdrop" style="display: none;">
+    <div class="modal">
+      <div class="modal-header">
+        <h3 style="font-size: 1rem; font-weight: 600;">Adicionar Novo Nó Estrutural</h3>
+        <button id="btnCloseModal" class="btn btn-icon"><i data-lucide="x"></i></button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label class="form-label">Tipo de Estrutura</label>
+          <select id="modalNodeTypeSelect" class="form-select"></select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Título / Rótulo</label>
+          <input type="text" id="modalNodeTitleInput" class="form-input" placeholder="Ex: Capítulo 2">
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="btnCancelModal" class="btn">Cancelar</button>
+        <button id="btnConfirmAddNode" class="btn btn-primary">Adicionar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal Configuração da Exportação de Objeto HTML (Página de Entrada em Matriz) -->
+  <div id="modalExportConfig" class="modal-backdrop" style="display: none;">
+    <div class="modal">
+      <div class="modal-header">
+        <h3 style="font-size: 1rem; font-weight: 600;">Opções da Página de Entrada em Matriz</h3>
+        <button id="btnCloseExportModal" class="btn btn-icon"><i data-lucide="x"></i></button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer; font-size: 0.9rem; font-weight: 600; color: var(--text-main);">
+            <input type="checkbox" id="matrixEnableCheck" checked style="width: 18px; height: 18px; accent-color: var(--accent-blue);">
+            <span>Incluir Página de Entrada em Matriz (Visão Geral de Miniaturas)</span>
+          </label>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Número de Colunas da Matriz</label>
+          <input type="number" id="matrixColsInput" class="form-input" min="1" max="10" value="4">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Largura Máxima de cada Imagem na Matriz (em pixéis)</label>
+          <input type="number" id="matrixMaxWidthInput" class="form-input" min="80" max="800" value="220">
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="btnCancelExportModal" class="btn">Cancelar</button>
+        <button id="btnConfirmExportHtml" class="btn btn-primary">Gerar Pacote HTML (.ZIP)</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Hidden Inputs -->
+  <input type="file" id="folderInputFallback" webkitdirectory directory style="display: none;">
+  <input type="file" id="imageFilesInput" multiple accept="image/*,.tif,.tiff" style="display: none;">
+  <input type="file" id="ephemeraFileInput" accept=".xlsx,.numbers" style="display: none;">
+
+  <!-- Visual Drag & Drop Overlay -->
+  <div id="dragDropOverlay" class="drag-drop-overlay" style="display: none;">
+    <div class="drag-drop-box">
+      <i data-lucide="upload-cloud" style="width: 56px; height: 56px; color: var(--accent-indigo);"></i>
+      <h3>Largar Ficheiros ou Pastas Aqui</h3>
+      <p>Imagens (.jpg, .png, .tif), Pastas Locais ou Tabelas (.xlsx, .numbers)</p>
+    </div>
+  </div>
+
+  <!-- Application Logic -->
+  <script type="module" src="src/app.js"></script>
+</body>
+</html>

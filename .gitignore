@@ -1,0 +1,19 @@
+# Output and Export packages
+ephemera_objects_output/
+*.zip
+
+# Sample / large data files (>100MB exceeds GitHub limits)
+ephemera-originais/
+*.numbers
+*.xlsx
+
+# Legacy / external references
+ContentE-java/
+
+# IDE / System files
+.vscode/
+.gemini/
+.idea/
+*.log
+Thumbs.db
+.DS_Store
