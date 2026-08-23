@@ -14,6 +14,7 @@ ContentE-java/
 .vscode/
 .gemini/
 .idea/
+.claude/
 *.log
 Thumbs.db
 .DS_Store

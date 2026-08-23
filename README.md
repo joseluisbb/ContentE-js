@@ -53,5 +53,10 @@ Como a aplicação utiliza módulos ES nativos (`type="module"`), pode ser servi
 │   │   └── treeManager.js          # Gestão do estado da árvore documental
 │   └── styles/
 │       └── main.css         # Estilos da aplicação e componentes
+├── _ephemera/                # (local, não versionado) Dados de exemplo para testar a app
+│   ├── ephemera-originais/         # Folhas .xlsx / .numbers de origem
+│   └── ephemera_objects_output/    # Objetos HTML exportados a partir delas
 └── .gitignore
 ```
+
+> `_ephemera/` é uma pasta apenas local: contém ficheiros de exemplo (alguns excedem o limite de 100MB do GitHub) usados para testar a importação Ephemera e as exportações. É ignorada pelo `.gitignore`.
