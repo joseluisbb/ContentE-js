@@ -34,9 +34,13 @@
           <i data-lucide="file-spreadsheet"></i>
           <span>Importar XLSX / Numbers</span>
         </button>
+        <button id="btnOpenObject" class="btn" title="Abrir Objeto Já Criado (.zip ou pasta descomprimida)">
+          <i data-lucide="package-open"></i>
+          <span>Abrir Objeto</span>
+        </button>
         <button id="btnExportHtmlPackage" class="btn btn-primary">
           <i data-lucide="globe"></i>
-          <span>Gerar Objeto HTML</span>
+          <span>Gerar HTML</span>
         </button>
         <button id="btnExportMets" class="btn btn-success">
           <i data-lucide="download"></i>
@@ -254,11 +258,11 @@
     </div>
   </div>
 
-  <!-- Modal Configuração da Exportação de Objeto HTML (Página de Entrada em Matriz) -->
+  <!-- Modal Configuração da Geração do HTML (Página de Entrada em Matriz + Destino) -->
   <div id="modalExportConfig" class="modal-backdrop" style="display: none;">
     <div class="modal">
       <div class="modal-header">
-        <h3 style="font-size: 1rem; font-weight: 600;">Opções da Página de Entrada em Matriz</h3>
+        <h3 style="font-size: 1rem; font-weight: 600;">Opções de Geração do HTML</h3>
         <button id="btnCloseExportModal" class="btn btn-icon"><i data-lucide="x"></i></button>
       </div>
       <div class="modal-body">
@@ -269,17 +273,55 @@
           </label>
         </div>
         <div class="form-group">
-          <label class="form-label">Número de Colunas da Matriz</label>
-          <input type="number" id="matrixColsInput" class="form-input" min="1" max="10" value="4">
+          <label class="form-label">Largura de Referência de cada Imagem na Matriz (em pixéis)</label>
+          <input type="number" id="matrixMaxWidthInput" class="form-input" min="80" max="800" value="220">
+          <p style="font-size: 0.78rem; color: var(--text-muted); margin-top: 0.3rem;">O número de colunas é automático e ajusta-se à largura da janela — desde 1 coluna (janela estreita) até tantas quantas couberem (janela larga), usando esta largura como referência mínima por imagem.</p>
         </div>
         <div class="form-group">
-          <label class="form-label">Largura Máxima de cada Imagem na Matriz (em pixéis)</label>
-          <input type="number" id="matrixMaxWidthInput" class="form-input" min="80" max="800" value="220">
+          <label class="form-label">Destino</label>
+          <div style="display: flex; flex-direction: column; gap: 0.5rem;">
+            <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer; font-size: 0.85rem;">
+              <input type="radio" name="exportDestination" id="exportDestZip" value="zip" checked style="width: 16px; height: 16px; accent-color: var(--accent-blue);">
+              <span>Descarregar como ficheiro .ZIP</span>
+            </label>
+            <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer; font-size: 0.85rem;">
+              <input type="radio" name="exportDestination" id="exportDestFolder" value="folder" style="width: 16px; height: 16px; accent-color: var(--accent-blue);">
+              <span>Guardar numa Pasta Local (escolher pasta)</span>
+            </label>
+          </div>
         </div>
       </div>
       <div class="modal-footer">
         <button id="btnCancelExportModal" class="btn">Cancelar</button>
-        <button id="btnConfirmExportHtml" class="btn btn-primary">Gerar Pacote HTML (.ZIP)</button>
+        <button id="btnConfirmExportHtml" class="btn btn-primary">Gerar HTML</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal Abrir Objeto Já Criado (.zip exportado ou pasta descomprimida) -->
+  <div id="modalOpenObject" class="modal-backdrop" style="display: none;">
+    <div class="modal">
+      <div class="modal-header">
+        <h3 style="font-size: 1rem; font-weight: 600;">Abrir Objeto Já Criado</h3>
+        <button id="btnCloseOpenObjectModal" class="btn btn-icon"><i data-lucide="x"></i></button>
+      </div>
+      <div class="modal-body">
+        <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1rem;">
+          Selecione o ficheiro .ZIP tal como foi exportado, ou a pasta onde esse ZIP já foi descomprimido.
+        </p>
+        <div style="display: flex; flex-direction: column; gap: 0.75rem;">
+          <button id="btnOpenObjectZip" class="btn btn-primary" style="justify-content: flex-start;">
+            <i data-lucide="file-archive"></i>
+            <span>Selecionar Ficheiro .ZIP</span>
+          </button>
+          <button id="btnOpenObjectFolder" class="btn" style="justify-content: flex-start;">
+            <i data-lucide="folder-open"></i>
+            <span>Selecionar Pasta Descomprimida</span>
+          </button>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="btnCancelOpenObjectModal" class="btn">Cancelar</button>
       </div>
     </div>
   </div>
@@ -288,6 +330,8 @@
   <input type="file" id="folderInputFallback" webkitdirectory directory style="display: none;">
   <input type="file" id="imageFilesInput" multiple accept="image/*,.tif,.tiff" style="display: none;">
   <input type="file" id="ephemeraFileInput" accept=".xlsx,.numbers" style="display: none;">
+  <input type="file" id="openObjectZipInput" accept=".zip" style="display: none;">
+  <input type="file" id="openObjectFolderInput" webkitdirectory directory style="display: none;">
 
   <!-- Visual Drag & Drop Overlay -->
   <div id="dragDropOverlay" class="drag-drop-overlay" style="display: none;">

@@ -177,6 +177,15 @@ export class TreeManager {
     return null;
   }
 
+  /**
+   * Substitui a árvore atual por uma árvore reconstruída (ex: a partir de um Objeto HTML já criado)
+   */
+  loadTree(rootNode, selectedNodeId = null) {
+    this.root = rootNode;
+    this.selectedNodeId = selectedNodeId || rootNode?.id || null;
+    this.notify();
+  }
+
   getSelectedNode() {
     return this.findNode(this.root, this.selectedNodeId);
   }

@@ -9,6 +9,7 @@ import { TreeManager } from './core/treeManager.js';
 import { MetsExporter } from './core/metsExporter.js';
 import { EphemeraImporter } from './core/ephemeraImporter.js';
 import { HtmlExporter } from './core/htmlExporter.js';
+import { HtmlImporter } from './core/htmlImporter.js';
 import { OrientationDetector } from './core/orientationDetector.js';
 
 class App {
@@ -189,21 +190,80 @@ class App {
     document.getElementById('btnCloseExportModal')?.addEventListener('click', () => this.closeExportModal());
     document.getElementById('btnCancelExportModal')?.addEventListener('click', () => this.closeExportModal());
 
-    // Confirmar Exportação com Definições da Matriz (Colunas e Largura Máxima em Pixéis)
+    // Confirmar Geração do HTML com Definições da Matriz (Largura de Referência em Pixéis, colunas automáticas) e Destino
     document.getElementById('btnConfirmExportHtml')?.addEventListener('click', async () => {
       const enabled = document.getElementById('matrixEnableCheck').checked;
-      const cols = parseInt(document.getElementById('matrixColsInput').value, 10) || 4;
       const maxPx = parseInt(document.getElementById('matrixMaxWidthInput').value, 10) || 220;
+      const destination = document.querySelector('input[name="exportDestination"]:checked')?.value || 'zip';
 
       this.closeExportModal();
-      document.getElementById('statusMessage').textContent = 'A gerar pacote HTML com Matriz de Entrada...';
-      
-      await HtmlExporter.exportHtmlPackage(this.treeManager.root, {
-        matrixEnabled: enabled,
-        matrixCols: cols,
-        matrixMaxPx: maxPx
-      });
-      document.getElementById('statusMessage').textContent = 'Objeto HTML descarregado com sucesso!';
+      document.getElementById('statusMessage').textContent = destination === 'folder'
+        ? 'A guardar HTML na pasta local escolhida...'
+        : 'A gerar HTML com Matriz de Entrada...';
+
+      try {
+        const result = await HtmlExporter.exportHtmlPackage(this.treeManager.root, {
+          matrixEnabled: enabled,
+          matrixMaxPx: maxPx,
+          destination
+        });
+
+        if (!result) {
+          document.getElementById('statusMessage').textContent = 'Pronto';
+          return;
+        }
+
+        document.getElementById('statusMessage').textContent = destination === 'folder'
+          ? 'HTML guardado com sucesso na pasta local escolhida!'
+          : 'HTML descarregado com sucesso!';
+      } catch (err) {
+        console.error('Erro ao gerar HTML:', err);
+        alert(`Falha ao gerar o HTML: ${err.message}`);
+        document.getElementById('statusMessage').textContent = 'Erro ao gerar HTML.';
+      }
+    });
+
+    // Abrir Modal "Abrir Objeto Já Criado"
+    document.getElementById('btnOpenObject')?.addEventListener('click', () => {
+      const modal = document.getElementById('modalOpenObject');
+      if (modal) modal.style.display = 'flex';
+    });
+
+    document.getElementById('btnCloseOpenObjectModal')?.addEventListener('click', () => this.closeOpenObjectModal());
+    document.getElementById('btnCancelOpenObjectModal')?.addEventListener('click', () => this.closeOpenObjectModal());
+
+    document.getElementById('btnOpenObjectZip')?.addEventListener('click', () => {
+      this.closeOpenObjectModal();
+      document.getElementById('openObjectZipInput')?.click();
+    });
+
+    document.getElementById('openObjectZipInput')?.addEventListener('change', async (e) => {
+      const file = e.target.files[0];
+      e.target.value = '';
+      if (file) await this.handleOpenObjectZip(file);
+    });
+
+    document.getElementById('btnOpenObjectFolder')?.addEventListener('click', async () => {
+      this.closeOpenObjectModal();
+      if ('showDirectoryPicker' in window && window.location.protocol !== 'file:') {
+        try {
+          const handle = await window.showDirectoryPicker({ mode: 'read' });
+          await this.handleOpenObjectDirectoryHandle(handle);
+          return;
+        } catch (err) {
+          if (err.name === 'AbortError') return;
+          console.warn('showDirectoryPicker falhou, a usar input fallback:', err);
+        }
+      }
+      document.getElementById('openObjectFolderInput')?.click();
+    });
+
+    document.getElementById('openObjectFolderInput')?.addEventListener('change', async (e) => {
+      const files = e.target.files;
+      e.target.value = '';
+      if (files && files.length > 0) {
+        await this.handleOpenObjectFileList(files);
+      }
     });
 
     // Alternar Vista em Matriz no Canvas Central da App
@@ -394,6 +454,79 @@ class App {
     if (modal) modal.style.display = 'none';
   }
 
+  closeOpenObjectModal() {
+    const modal = document.getElementById('modalOpenObject');
+    if (modal) modal.style.display = 'none';
+  }
+
+  confirmReplaceCurrentObject() {
+    const root = this.treeManager.root;
+    const hasContent = root && root.children && root.children.length > 0;
+    if (!hasContent) return true;
+    return confirm('Já existe um objeto aberto com conteúdo. Abrir um novo objeto irá substituir o trabalho atual não guardado. Deseja continuar?');
+  }
+
+  loadImportedRoot(root) {
+    this.treeManager.loadTree(root);
+    this.fileUrlCache = new WeakMap();
+    this.selectedMatrixNodeIds.clear();
+    this.matrixSuggestionsMap.clear();
+    this.isMatrixViewActive = false;
+    this.updateViewerToolbarUI();
+
+    const pageNodes = [];
+    this.collectPagesRecursive(root, pageNodes);
+    this.renderThumbnails(true);
+    if (pageNodes.length > 0) {
+      this.treeManager.selectNode(pageNodes[0].id);
+    }
+  }
+
+  async handleOpenObjectZip(file) {
+    if (!this.confirmReplaceCurrentObject()) return;
+    document.getElementById('statusMessage').textContent = `A abrir objeto a partir de "${file.name}"...`;
+    try {
+      const root = await HtmlImporter.loadFromZipFile(file);
+      this.loadImportedRoot(root);
+      document.getElementById('statusMessage').textContent = `Objeto "${root.label}" aberto com sucesso a partir do ZIP.`;
+      document.getElementById('statusFolder').textContent = `Objeto: ${file.name}`;
+    } catch (err) {
+      console.error('Erro ao abrir objeto ZIP:', err);
+      alert(`Falha ao abrir o objeto: ${err.message}`);
+      document.getElementById('statusMessage').textContent = 'Erro ao abrir objeto.';
+    }
+  }
+
+  async handleOpenObjectDirectoryHandle(handle) {
+    if (!this.confirmReplaceCurrentObject()) return;
+    document.getElementById('statusMessage').textContent = `A abrir objeto a partir da pasta "${handle.name}"...`;
+    try {
+      const root = await HtmlImporter.loadFromDirectoryHandle(handle);
+      this.loadImportedRoot(root);
+      document.getElementById('statusMessage').textContent = `Objeto "${root.label}" aberto com sucesso a partir da pasta.`;
+      document.getElementById('statusFolder').textContent = `Objeto: ${handle.name}`;
+    } catch (err) {
+      console.error('Erro ao abrir objeto da pasta:', err);
+      alert(`Falha ao abrir o objeto: ${err.message}`);
+      document.getElementById('statusMessage').textContent = 'Erro ao abrir objeto.';
+    }
+  }
+
+  async handleOpenObjectFileList(fileList) {
+    if (!this.confirmReplaceCurrentObject()) return;
+    document.getElementById('statusMessage').textContent = 'A abrir objeto a partir da pasta selecionada...';
+    try {
+      const root = await HtmlImporter.loadFromFileInputList(fileList);
+      this.loadImportedRoot(root);
+      document.getElementById('statusMessage').textContent = `Objeto "${root.label}" aberto com sucesso.`;
+      document.getElementById('statusFolder').textContent = 'Objeto aberto a partir de pasta local';
+    } catch (err) {
+      console.error('Erro ao abrir objeto:', err);
+      alert(`Falha ao abrir o objeto: ${err.message}`);
+      document.getElementById('statusMessage').textContent = 'Erro ao abrir objeto.';
+    }
+  }
+
   processImportedFiles() {
     const files = this.fileSystem.getFileList();
     const imageFiles = files.filter(f => f.type.startsWith('image/'));
@@ -576,7 +709,7 @@ class App {
 
     titleSpan.textContent = `Visão Geral em Matriz (${pageNodes.length} páginas)`;
 
-    const cols = parseInt(document.getElementById('matrixColsInput')?.value, 10) || 4;
+    const refPx = parseInt(document.getElementById('matrixMaxWidthInput')?.value, 10) || 220;
     const selectedCount = this.selectedMatrixNodeIds.size;
     const suggestionsCount = this.matrixSuggestionsMap.size;
 
@@ -624,7 +757,7 @@ class App {
 
         <!-- Grelha de Cartões -->
         <div id="matrixGridScrollContainer" style="flex:1; overflow-y:auto; padding:1.5rem;">
-          <div style="display:grid; grid-template-columns: repeat(${cols}, 1fr); gap: 1rem; max-width: 1400px; margin:0 auto;">
+          <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(${refPx}px, 1fr)); gap: 1rem;">
     `;
 
     pageNodes.forEach((p, idx) => {

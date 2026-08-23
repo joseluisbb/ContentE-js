@@ -15,34 +15,33 @@ export class HtmlExporter {
       return;
     }
 
-    if (typeof window.JSZip === 'undefined') {
+    const destination = options.destination === 'folder' ? 'folder' : 'zip';
+
+    if (destination === 'zip' && typeof window.JSZip === 'undefined') {
       alert('JSZip não está disponível.');
       return;
     }
 
     const matrixOpts = {
       enabled: options.matrixEnabled !== undefined ? options.matrixEnabled : true,
-      columns: options.matrixCols || 4,
       maxWidthPx: options.matrixMaxPx || 220
     };
 
-    const zip = new window.JSZip();
     const cleanFolderName = treeRoot.label.replace(/[^a-z0-9_-]/gi, '_');
-    const objectFolder = zip.folder(cleanFolderName);
 
-    // 1. Criar pasta de imagens e adicionar os ficheiros
-    const imgFolder = objectFolder.folder('images');
+    // 1. Gerar (e rodar fisicamente) os ficheiros de imagem
     const pageNodes = [];
     HtmlExporter.collectPageNodes(treeRoot, pageNodes);
 
     const imageMap = new Map();
+    const imageFiles = new Map(); // 'images/xxx.ext' -> Blob
 
     for (let i = 0; i < pageNodes.length; i++) {
       const p = pageNodes[i];
       if (p.fileRef && p.fileRef.file) {
         const ext = p.fileRef.name.split('.').pop();
         const cleanName = `image_${(i + 1).toString().padStart(3, '0')}.${ext}`;
-        
+
         const rotation = p.metadata?.rotation || 0;
         let finalBlob = p.fileRef.file;
 
@@ -54,20 +53,40 @@ export class HtmlExporter {
           }
         }
 
-        imgFolder.file(cleanName, finalBlob);
+        imageFiles.set(`images/${cleanName}`, finalBlob);
         imageMap.set(p.id, `images/${cleanName}`);
       }
     }
 
     // 2. Gerar METS XML
     const metsXml = MetsExporter.exportMetsXml(treeRoot);
-    objectFolder.file('METS.xml', metsXml);
 
     // 3. Gerar index.html para Navegação em Browser com Matriz de Entrada
     const htmlContent = HtmlExporter.generateStandaloneHtml(treeRoot, imageMap, matrixOpts);
+
+    if (destination === 'folder') {
+      return HtmlExporter.writeToLocalFolder(cleanFolderName, imageFiles, metsXml, htmlContent);
+    }
+
+    return HtmlExporter.downloadAsZip(cleanFolderName, imageFiles, metsXml, htmlContent);
+  }
+
+  /**
+   * Empacota o objeto num ficheiro .ZIP e inicia o descarregamento
+   */
+  static async downloadAsZip(cleanFolderName, imageFiles, metsXml, htmlContent) {
+    const zip = new window.JSZip();
+    const objectFolder = zip.folder(cleanFolderName);
+    const imgFolder = objectFolder.folder('images');
+
+    imageFiles.forEach((blob, relPath) => {
+      const name = relPath.replace(/^images\//, '');
+      imgFolder.file(name, blob);
+    });
+
+    objectFolder.file('METS.xml', metsXml);
     objectFolder.file('index.html', htmlContent);
 
-    // 4. Descarregar o ficheiro ZIP
     const zipBlob = await zip.generateAsync({ type: 'blob' });
     const url = URL.createObjectURL(zipBlob);
     const a = document.createElement('a');
@@ -75,6 +94,60 @@ export class HtmlExporter {
     a.download = `${cleanFolderName}_ObjetoHTML.zip`;
     a.click();
     URL.revokeObjectURL(url);
+
+    return { destination: 'zip', folderName: cleanFolderName };
+  }
+
+  /**
+   * Escreve o objeto diretamente numa pasta local escolhida pelo utilizador (File System Access API)
+   */
+  static async writeToLocalFolder(cleanFolderName, imageFiles, metsXml, htmlContent) {
+    if (!('showDirectoryPicker' in window) || window.location.protocol === 'file:') {
+      alert('O seu navegador não suporta guardar diretamente numa pasta local. Utilize a opção de descarregar como .ZIP.');
+      return null;
+    }
+
+    let parentHandle;
+    try {
+      parentHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
+    } catch (err) {
+      if (err.name === 'AbortError') return null;
+      throw err;
+    }
+
+    let objectDirHandle;
+    try {
+      objectDirHandle = await parentHandle.getDirectoryHandle(cleanFolderName, { create: false });
+    } catch (err) {
+      if (err.name !== 'NotFoundError' && err.name !== 'TypeMismatchError') throw err;
+
+      const shouldCreate = confirm(`A pasta "${cleanFolderName}" não existe dentro de "${parentHandle.name}".\n\nDeseja criá-la agora?`);
+      if (!shouldCreate) return null;
+
+      objectDirHandle = await parentHandle.getDirectoryHandle(cleanFolderName, { create: true });
+    }
+
+    const imagesDirHandle = await objectDirHandle.getDirectoryHandle('images', { create: true });
+
+    for (const [relPath, blob] of imageFiles) {
+      const name = relPath.replace(/^images\//, '');
+      const fileHandle = await imagesDirHandle.getFileHandle(name, { create: true });
+      const writable = await fileHandle.createWritable();
+      await writable.write(blob);
+      await writable.close();
+    }
+
+    const metsHandle = await objectDirHandle.getFileHandle('METS.xml', { create: true });
+    const metsWritable = await metsHandle.createWritable();
+    await metsWritable.write(metsXml);
+    await metsWritable.close();
+
+    const indexHandle = await objectDirHandle.getFileHandle('index.html', { create: true });
+    const indexWritable = await indexHandle.createWritable();
+    await indexWritable.write(htmlContent);
+    await indexWritable.close();
+
+    return { destination: 'folder', folderName: cleanFolderName, dirName: parentHandle.name };
   }
 
   static async rotateImageBlob(file, degrees) {
@@ -168,8 +241,8 @@ export class HtmlExporter {
 
     /* Estilos da Matriz / Grelha de Entrada */
     .matrix-view { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: var(--bg-main); z-index: 20; padding: 1.5rem; overflow-y: auto; }
-    .matrix-grid { display: grid; grid-template-columns: repeat(${matrixOpts.columns}, 1fr); gap: 1.25rem; justify-items: center; max-width: 1400px; margin: 0 auto; }
-    .matrix-card { background: var(--bg-side); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; cursor: pointer; transition: transform 0.15s, border-color 0.15s; width: 100%; max-width: ${matrixOpts.maxWidthPx}px; display: flex; flex-direction: column; }
+    .matrix-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(${matrixOpts.maxWidthPx}px, 1fr)); gap: 1.25rem; justify-items: stretch; }
+    .matrix-card { background: var(--bg-side); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; cursor: pointer; transition: transform 0.15s, border-color 0.15s; width: 100%; display: flex; flex-direction: column; }
     .matrix-card:hover { transform: translateY(-4px); border-color: var(--accent); box-shadow: 0 8px 16px rgba(0,0,0,0.4); }
     .matrix-img-box { height: 180px; width: 100%; background: #000; display: flex; align-items: center; justify-content: center; overflow: hidden; }
     .matrix-img-box img { max-width: 100%; max-height: 100%; object-fit: contain; }
@@ -191,7 +264,7 @@ export class HtmlExporter {
     <!-- Vista em Matriz (Página de Entrada) -->
     <div id="matrixContainer" class="matrix-view" style="display: ${matrixOpts.enabled ? 'block' : 'none'};">
       <div style="max-width: 1400px; margin: 0 auto 1.25rem auto; display: flex; align-items: center; justify-content: space-between;">
-        <h2 style="font-size: 1.2rem; font-weight: 600;">Visão Geral da Obra (${matrixOpts.columns} Colunas)</h2>
+        <h2 style="font-size: 1.2rem; font-weight: 600;">Visão Geral da Obra</h2>
         <span style="font-size: 0.85rem; color: var(--text-muted);">Clique em qualquer imagem para abrir no leitor</span>
       </div>
       <div id="matrixGrid" class="matrix-grid"></div>
