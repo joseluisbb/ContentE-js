@@ -12,8 +12,14 @@ export class HtmlImporter {
     if (typeof window.JSZip === 'undefined') {
       throw new Error('JSZip não está disponível.');
     }
-
     const zip = await window.JSZip.loadAsync(file);
+    return HtmlImporter.loadFromZipObject(zip);
+  }
+
+  /**
+   * Reconstrói a árvore a partir de um objeto JSZip já carregado (evita reanalisar o binário do ZIP)
+   */
+  static async loadFromZipObject(zip) {
     const indexEntry = HtmlImporter.findIndexEntry(zip);
     if (!indexEntry) {
       throw new Error('Não foi encontrado nenhum ficheiro index.html válido dentro do ZIP.');

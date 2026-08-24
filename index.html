@@ -5,12 +5,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>ContentE Web — Editor de Metadados Estruturais</title>
   <link rel="stylesheet" href="src/styles/main.css">
-  <!-- Lucide Icons via Unpkg -->
-  <script src="https://unpkg.com/lucide@latest"></script>
+  <!-- Bibliotecas vendorizadas localmente em vendor/ para funcionamento totalmente offline (essencial no executável empacotado) -->
+  <!-- Lucide Icons -->
+  <script src="vendor/lucide.js"></script>
   <!-- JSZip para descompactar .xlsx, .numbers e criar pacotes ZIP -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+  <script src="vendor/jszip.min.js"></script>
   <!-- SheetJS para ler tabelas XLSX -->
-  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <script src="vendor/xlsx.full.min.js"></script>
+  <!-- jsPDF para gerar o Objeto em formato PDF -->
+  <script src="vendor/jspdf.umd.min.js"></script>
 </head>
 <body>
   <div id="app">
@@ -22,29 +25,13 @@
         <span class="brand-badge">Ephemera Ready</span>
       </div>
       <div class="header-actions">
-        <button id="btnOpenFolder" class="btn" title="Abrir Pasta Local de Imagens">
+        <button id="btnOpenObject" class="btn" style="background: linear-gradient(135deg, #7c3aed, var(--accent-indigo)); color: white;" title="Abrir uma Pasta (obra já gerada ou apenas imagens). Para .zip/.xlsx/.numbers, arraste o ficheiro para a árvore.">
           <i data-lucide="folder-open"></i>
-          <span>Pasta Local</span>
+          <span>Abrir Pasta</span>
         </button>
-        <button id="btnOpenFiles" class="btn" title="Selecionar Ficheiros de Imagem">
-          <i data-lucide="images"></i>
-          <span>Imagens</span>
-        </button>
-        <button id="btnImportEphemera" class="btn" style="background: linear-gradient(135deg, #7c3aed, var(--accent-indigo)); color: white;">
-          <i data-lucide="file-spreadsheet"></i>
-          <span>Importar XLSX / Numbers</span>
-        </button>
-        <button id="btnOpenObject" class="btn" title="Abrir Objeto Já Criado (.zip ou pasta descomprimida)">
-          <i data-lucide="package-open"></i>
-          <span>Abrir Objeto</span>
-        </button>
-        <button id="btnExportHtmlPackage" class="btn btn-primary">
-          <i data-lucide="globe"></i>
-          <span>Gerar HTML</span>
-        </button>
-        <button id="btnExportMets" class="btn btn-success">
-          <i data-lucide="download"></i>
-          <span>Exportar METS XML</span>
+        <button id="btnSaveObject" class="btn btn-primary">
+          <i data-lucide="save"></i>
+          <span>Gravar</span>
         </button>
       </div>
     </header>
@@ -53,7 +40,7 @@
     <main class="workspace-main">
       
       <!-- Panel 1: Tree Hierarchy -->
-      <section class="panel">
+      <section class="panel" id="treePanel">
         <div class="panel-header">
           <span><i data-lucide="folder-tree"></i> Estrutura Documental</span>
           <span id="nodeCountBadge" class="tree-node-badge">0 nós</span>
@@ -62,20 +49,11 @@
           <button id="btnAddChild" class="btn btn-icon" title="Adicionar Nó Filho">
             <i data-lucide="plus"></i>
           </button>
-          <button id="btnMoveUp" class="btn btn-icon" title="Mover para Cima">
-            <i data-lucide="arrow-up"></i>
-          </button>
-          <button id="btnMoveDown" class="btn btn-icon" title="Mover para Baixo">
-            <i data-lucide="arrow-down"></i>
-          </button>
           <button id="btnTreeRotateCCW" class="btn btn-icon" title="Rodar Imagem Selecionada 90° para a Esquerda">
             <i data-lucide="rotate-ccw"></i>
           </button>
           <button id="btnTreeRotateCW" class="btn btn-icon" title="Rodar Imagem Selecionada 90° para a Direita">
             <i data-lucide="rotate-cw"></i>
-          </button>
-          <button id="btnAutoDetectAll" class="btn btn-icon" title="Detetar Orientação de Todas as Imagens" style="color: var(--accent-indigo)">
-            <i data-lucide="wand-2"></i>
           </button>
           <button id="btnDeleteNode" class="btn btn-icon" title="Remover Nó" style="color: var(--accent-rose)">
             <i data-lucide="trash-2"></i>
@@ -88,6 +66,8 @@
         </div>
       </section>
 
+      <div id="treePanelResizer" class="panel-resizer" title="Arrastar para ajustar a largura"></div>
+
       <!-- Panel 2: Central Image / Document Viewer -->
       <section class="center-viewport">
         <div class="viewer-toolbar">
@@ -96,23 +76,10 @@
               Nenhum documento selecionado
             </span>
             <span id="rotationAngleBadge" class="tree-node-badge" style="background:#7c3aed; color:white;">Rotação: 0°</span>
-            <div id="orientationSuggestionContainer" style="display:none; align-items:center; gap:0.4rem;">
-              <span id="orientationSuggestionBadge" class="suggestion-badge">
-                <i data-lucide="sparkles" style="width:14px; height:14px;"></i>
-                <span id="orientationSuggestionText">Sugestão: Rodar 90°</span>
-              </span>
-              <button id="btnApplyOrientationSuggestion" class="btn btn-sm" style="background:#7c3aed; color:white; padding:0.2rem 0.5rem; font-size:0.75rem;">
-                Aplicar
-              </button>
-            </div>
           </div>
           <div style="display: flex; gap: 0.5rem; align-items: center;">
             <button id="btnToggleMatrixView" class="btn" title="Alternar Vista em Matriz"><i data-lucide="grid"></i><span>Matriz</span></button>
             <div id="individualViewerControls" style="display: flex; gap: 0.5rem; align-items: center;">
-              <button id="btnAutoDetect" class="btn" title="Analisar Orientação Recomendada para esta Imagem" style="background: var(--bg-hover); border: 1px solid var(--accent-indigo);">
-                <i data-lucide="wand-2" style="color: var(--accent-indigo);"></i>
-                <span>Analisar Orientação</span>
-              </button>
               <button id="btnZoomIn" class="btn btn-icon" title="Ampliar"><i data-lucide="zoom-in"></i></button>
               <button id="btnZoomOut" class="btn btn-icon" title="Reduzir"><i data-lucide="zoom-out"></i></button>
               <button id="btnRotateCCW" class="btn btn-icon" title="Rodar 90° Esquerda"><i data-lucide="rotate-ccw"></i></button>
@@ -125,7 +92,7 @@
           <div class="empty-state">
             <i data-lucide="image"></i>
             <h3>Selecione uma Imagem ou Folha</h3>
-            <p>Importe um ficheiro .xlsx / .numbers da coleção Ephemera ou abra uma pasta local para visualizar o objeto.</p>
+            <p>Utilize o botão "Abrir Objeto" para importar um ficheiro Ephemera (.xlsx / .numbers), uma pasta de imagens, uma obra já gerada, ou um ZIP de qualquer um destes.</p>
           </div>
         </div>
 
@@ -173,8 +140,12 @@
                 </select>
               </div>
               <div class="form-group">
-                <label class="form-label">Notas / Verso / Direitos (dc:rights)</label>
-                <textarea id="metaRights" class="form-textarea" placeholder="Condições, texto no verso ou notas"></textarea>
+                <label class="form-label">Notas</label>
+                <textarea id="metaNotes" class="form-textarea" placeholder="Notas, texto no verso ou observações"></textarea>
+              </div>
+              <div class="form-group">
+                <label class="form-label">Direitos (dc:rights)</label>
+                <textarea id="metaRights" class="form-textarea" placeholder="Condições de utilização / direitos"></textarea>
               </div>
             </form>
           </div>
@@ -259,30 +230,49 @@
   </div>
 
   <!-- Modal Configuração da Geração do HTML (Página de Entrada em Matriz + Destino) -->
-  <div id="modalExportConfig" class="modal-backdrop" style="display: none;">
+  <div id="modalSaveOptions" class="modal-backdrop" style="display: none;">
     <div class="modal">
       <div class="modal-header">
-        <h3 style="font-size: 1rem; font-weight: 600;">Opções de Geração do HTML</h3>
-        <button id="btnCloseExportModal" class="btn btn-icon"><i data-lucide="x"></i></button>
+        <h3 style="font-size: 1rem; font-weight: 600;">Opções de Gravação</h3>
+        <button id="btnCloseSaveModal" class="btn btn-icon"><i data-lucide="x"></i></button>
       </div>
       <div class="modal-body">
         <div class="form-group">
-          <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer; font-size: 0.9rem; font-weight: 600; color: var(--text-main);">
-            <input type="checkbox" id="matrixEnableCheck" checked style="width: 18px; height: 18px; accent-color: var(--accent-blue);">
-            <span>Incluir Página de Entrada em Matriz (Visão Geral de Miniaturas)</span>
-          </label>
+          <label class="form-label">O que pretende gerar?</label>
+          <div style="display: flex; flex-direction: column; gap: 0.5rem;">
+            <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer; font-size: 0.9rem; font-weight: 600; color: var(--text-main);">
+              <input type="checkbox" id="genHtmlCheck" checked style="width: 18px; height: 18px; accent-color: var(--accent-blue);">
+              <span>Gerar HTML (obra navegável em browser)</span>
+            </label>
+            <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer; font-size: 0.9rem; font-weight: 600; color: var(--text-main);">
+              <input type="checkbox" id="genPdfCheck" style="width: 18px; height: 18px; accent-color: var(--accent-blue);">
+              <span>Gerar PDF (documento único paginado)</span>
+            </label>
+            <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer; font-size: 0.9rem; font-weight: 600; color: var(--text-main);">
+              <input type="checkbox" id="genXlsxCheck" style="width: 18px; height: 18px; accent-color: var(--accent-blue);">
+              <span>Gerar XLSX (tabela de metadados)</span>
+            </label>
+          </div>
         </div>
-        <div class="form-group">
-          <label class="form-label">Largura de Referência de cada Imagem na Matriz (em pixéis)</label>
-          <input type="number" id="matrixMaxWidthInput" class="form-input" min="80" max="800" value="220">
-          <p style="font-size: 0.78rem; color: var(--text-muted); margin-top: 0.3rem;">O número de colunas é automático e ajusta-se à largura da janela — desde 1 coluna (janela estreita) até tantas quantas couberem (janela larga), usando esta largura como referência mínima por imagem.</p>
+        <div id="matrixOptionsGroup">
+          <div class="form-group">
+            <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer; font-size: 0.9rem; font-weight: 600; color: var(--text-main);">
+              <input type="checkbox" id="matrixEnableCheck" checked style="width: 18px; height: 18px; accent-color: var(--accent-blue);">
+              <span>Incluir Página de Entrada em Matriz (Visão Geral de Miniaturas)</span>
+            </label>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Largura de Referência de cada Imagem na Matriz (em pixéis)</label>
+            <input type="number" id="matrixMaxWidthInput" class="form-input" min="80" max="800" value="220">
+            <p style="font-size: 0.78rem; color: var(--text-muted); margin-top: 0.3rem;">O número de colunas é automático e ajusta-se à largura da janela — desde 1 coluna (janela estreita) até tantas quantas couberem (janela larga), usando esta largura como referência mínima por imagem.</p>
+          </div>
         </div>
         <div class="form-group">
           <label class="form-label">Destino</label>
           <div style="display: flex; flex-direction: column; gap: 0.5rem;">
             <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer; font-size: 0.85rem;">
               <input type="radio" name="exportDestination" id="exportDestZip" value="zip" checked style="width: 16px; height: 16px; accent-color: var(--accent-blue);">
-              <span>Descarregar como ficheiro .ZIP</span>
+              <span>Descarregar (.ZIP se necessário empacotar vários formatos/imagens, ou o ficheiro diretamente se for só um)</span>
             </label>
             <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer; font-size: 0.85rem;">
               <input type="radio" name="exportDestination" id="exportDestFolder" value="folder" style="width: 16px; height: 16px; accent-color: var(--accent-blue);">
@@ -292,55 +282,14 @@
         </div>
       </div>
       <div class="modal-footer">
-        <button id="btnCancelExportModal" class="btn">Cancelar</button>
-        <button id="btnConfirmExportHtml" class="btn btn-primary">Gerar HTML</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- Modal Abrir Objeto Já Criado (.zip exportado ou pasta descomprimida) -->
-  <div id="modalOpenObject" class="modal-backdrop" style="display: none;">
-    <div class="modal">
-      <div class="modal-header">
-        <h3 style="font-size: 1rem; font-weight: 600;">Abrir Objeto Já Criado</h3>
-        <button id="btnCloseOpenObjectModal" class="btn btn-icon"><i data-lucide="x"></i></button>
-      </div>
-      <div class="modal-body">
-        <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1rem;">
-          Selecione o ficheiro .ZIP tal como foi exportado, ou a pasta onde esse ZIP já foi descomprimido.
-        </p>
-        <div style="display: flex; flex-direction: column; gap: 0.75rem;">
-          <button id="btnOpenObjectZip" class="btn btn-primary" style="justify-content: flex-start;">
-            <i data-lucide="file-archive"></i>
-            <span>Selecionar Ficheiro .ZIP</span>
-          </button>
-          <button id="btnOpenObjectFolder" class="btn" style="justify-content: flex-start;">
-            <i data-lucide="folder-open"></i>
-            <span>Selecionar Pasta Descomprimida</span>
-          </button>
-        </div>
-      </div>
-      <div class="modal-footer">
-        <button id="btnCancelOpenObjectModal" class="btn">Cancelar</button>
+        <button id="btnCancelSaveModal" class="btn">Cancelar</button>
+        <button id="btnConfirmSave" class="btn btn-primary">Gravar</button>
       </div>
     </div>
   </div>
 
   <!-- Hidden Inputs -->
-  <input type="file" id="folderInputFallback" webkitdirectory directory style="display: none;">
-  <input type="file" id="imageFilesInput" multiple accept="image/*,.tif,.tiff" style="display: none;">
-  <input type="file" id="ephemeraFileInput" accept=".xlsx,.numbers" style="display: none;">
-  <input type="file" id="openObjectZipInput" accept=".zip" style="display: none;">
   <input type="file" id="openObjectFolderInput" webkitdirectory directory style="display: none;">
-
-  <!-- Visual Drag & Drop Overlay -->
-  <div id="dragDropOverlay" class="drag-drop-overlay" style="display: none;">
-    <div class="drag-drop-box">
-      <i data-lucide="upload-cloud" style="width: 56px; height: 56px; color: var(--accent-indigo);"></i>
-      <h3>Largar Ficheiros ou Pastas Aqui</h3>
-      <p>Imagens (.jpg, .png, .tif), Pastas Locais ou Tabelas (.xlsx, .numbers)</p>
-    </div>
-  </div>
 
   <!-- Application Logic -->
   <script type="module" src="src/app.js"></script>

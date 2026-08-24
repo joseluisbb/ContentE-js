@@ -4,69 +4,6 @@
  */
 
 export class FileSystemManager {
-  constructor() {
-    this.directoryHandle = null;
-    this.fileEntries = new Map(); // filename -> File object or FileHandle
-  }
-
-  /**
-   * Pede autorização ao utilizador para selecionar uma pasta local
-   */
-  async selectLocalDirectory() {
-    if ('showDirectoryPicker' in window) {
-      try {
-        this.directoryHandle = await window.showDirectoryPicker({
-          mode: 'readwrite'
-        });
-        await this.scanDirectory(this.directoryHandle);
-        return { success: true, count: this.fileEntries.size, handle: this.directoryHandle };
-      } catch (err) {
-        if (err.name === 'AbortError') return { success: false, aborted: true };
-        console.warn('showDirectoryPicker falhou, a usar fallback:', err);
-      }
-    }
-    return { success: false, fallback: true };
-  }
-
-  /**
-   * Lê recursivamente a pasta selecionada
-   */
-  async scanDirectory(dirHandle, pathPrefix = '') {
-    for await (const entry of dirHandle.values()) {
-      const relPath = pathPrefix ? `${pathPrefix}/${entry.name}` : entry.name;
-      if (entry.kind === 'file') {
-        const file = await entry.getFile();
-        this.fileEntries.set(relPath, {
-          name: entry.name,
-          relPath,
-          file,
-          size: file.size,
-          type: file.type || this.inferMimeType(entry.name)
-        });
-      } else if (entry.kind === 'directory') {
-        await this.scanDirectory(entry, relPath);
-      }
-    }
-  }
-
-  /**
-   * Processa ficheiros vindos de um <input type="file" webkitdirectory>
-   */
-  handleFileInputList(fileList) {
-    this.fileEntries.clear();
-    for (const file of fileList) {
-      const relPath = file.webkitRelativePath || file.name;
-      this.fileEntries.set(relPath, {
-        name: file.name,
-        relPath,
-        file,
-        size: file.size,
-        type: file.type || this.inferMimeType(file.name)
-      });
-    }
-    return { success: true, count: this.fileEntries.size };
-  }
-
   /**
    * Calcula o MD5 checksum de um ficheiro usando Web Crypto API
    */
@@ -130,15 +67,5 @@ export class FileSystemManager {
       xml: 'text/xml'
     };
     return map[ext] || 'application/octet-stream';
-  }
-
-  getFileList() {
-    const list = Array.from(this.fileEntries.values());
-    list.sort((a, b) => (a.name || '').localeCompare(b.name || '', undefined, { numeric: true, sensitivity: 'base' }));
-    return list;
-  }
-
-  getFile(path) {
-    return this.fileEntries.get(path);
   }
 }

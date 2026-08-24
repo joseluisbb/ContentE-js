@@ -1,23 +1,36 @@
 /**
- * ContentE Web — Standalone HTML Package Exporter
- * Gera o Objeto HTML com suporte a Página de Entrada em Matriz (Grelha de Miniaturas Opcional)
+ * ContentE Web — Exportador do Objeto (HTML navegável, PDF paginado e/ou XLSX de metadados)
+ * Gera o Objeto HTML com suporte a Página de Entrada em Matriz (Grelha de Miniaturas Opcional),
+ * guardando como .ZIP/ficheiro descarregado ou diretamente numa pasta local
  */
 
 import { MetsExporter } from './metsExporter.js';
+import { PdfExporter } from './pdfExporter.js';
+import { XlsxExporter } from './xlsxExporter.js';
 
 export class HtmlExporter {
   /**
-   * Exporta a árvore do ContentE como um pacote ZIP contendo index.html, imagens rodadas, METS.xml e Página de Entrada em Matriz
+   * Gera o(s) formato(s) pedidos (HTML, PDF e/ou XLSX) a partir da árvore do ContentE
    */
-  static async exportHtmlPackage(treeRoot, options = {}) {
+  static async exportObject(treeRoot, options = {}) {
     if (!treeRoot) {
       alert('Não existe nenhum objeto documental para exportar.');
       return;
     }
 
-    const destination = options.destination === 'folder' ? 'folder' : 'zip';
+    const generateHtml = !!options.generateHtml;
+    const generatePdf = !!options.generatePdf;
+    const generateXlsx = !!options.generateXlsx;
 
-    if (destination === 'zip' && typeof window.JSZip === 'undefined') {
+    if (!generateHtml && !generatePdf && !generateXlsx) {
+      alert('Selecione pelo menos uma opção: Gerar HTML, Gerar PDF ou Gerar XLSX.');
+      return;
+    }
+
+    const destination = options.destination === 'folder' ? 'folder' : 'zip';
+    const needsImagesFolder = generateHtml || generateXlsx;
+
+    if (destination === 'zip' && needsImagesFolder && typeof window.JSZip === 'undefined') {
       alert('JSZip não está disponível.');
       return;
     }
@@ -29,12 +42,14 @@ export class HtmlExporter {
 
     const cleanFolderName = treeRoot.label.replace(/[^a-z0-9_-]/gi, '_');
 
-    // 1. Gerar (e rodar fisicamente) os ficheiros de imagem
+    // 1. Gerar (e rodar fisicamente) os ficheiros de imagem — reaproveitados pelo HTML, PDF e XLSX
     const pageNodes = [];
     HtmlExporter.collectPageNodes(treeRoot, pageNodes);
 
     const imageMap = new Map();
     const imageFiles = new Map(); // 'images/xxx.ext' -> Blob
+    const orderedBlobs = [];
+    const orderedFicheNodes = []; // nós alinhados 1:1 com orderedBlobs, para as fichas de metadados do PDF/XLSX
 
     for (let i = 0; i < pageNodes.length; i++) {
       const p = pageNodes[i];
@@ -55,45 +70,83 @@ export class HtmlExporter {
 
         imageFiles.set(`images/${cleanName}`, finalBlob);
         imageMap.set(p.id, `images/${cleanName}`);
+        orderedBlobs.push(finalBlob);
+        orderedFicheNodes.push(p);
       }
     }
 
-    // 2. Gerar METS XML
-    const metsXml = MetsExporter.exportMetsXml(treeRoot);
+    // 2. Montar o mapa plano de ficheiros do pacote: caminho relativo -> Blob/string
+    const packageFiles = new Map();
 
-    // 3. Gerar index.html para Navegação em Browser com Matriz de Entrada
-    const htmlContent = HtmlExporter.generateStandaloneHtml(treeRoot, imageMap, matrixOpts);
-
-    if (destination === 'folder') {
-      return HtmlExporter.writeToLocalFolder(cleanFolderName, imageFiles, metsXml, htmlContent);
+    if (needsImagesFolder) {
+      imageFiles.forEach((blob, relPath) => packageFiles.set(relPath, blob));
     }
 
-    return HtmlExporter.downloadAsZip(cleanFolderName, imageFiles, metsXml, htmlContent);
+    if (generateHtml) {
+      packageFiles.set('METS.xml', MetsExporter.exportMetsXml(treeRoot));
+      packageFiles.set('index.html', HtmlExporter.generateStandaloneHtml(treeRoot, imageMap, matrixOpts));
+    }
+
+    if (generatePdf) {
+      try {
+        const pdfBlob = await PdfExporter.buildPdfBlob(orderedFicheNodes, orderedBlobs, {
+          title: treeRoot.label,
+          includeMatrix: matrixOpts.enabled,
+          matrixMaxPx: matrixOpts.maxWidthPx
+        });
+        packageFiles.set(`${cleanFolderName}.pdf`, pdfBlob);
+      } catch (err) {
+        alert(`Falha ao gerar o PDF: ${err.message}`);
+        return null;
+      }
+    }
+
+    if (generateXlsx) {
+      try {
+        const xlsxBlob = XlsxExporter.buildXlsxBlob(orderedFicheNodes, imageMap);
+        packageFiles.set(`${cleanFolderName}.xlsx`, xlsxBlob);
+      } catch (err) {
+        alert(`Falha ao gerar o XLSX: ${err.message}`);
+        return null;
+      }
+    }
+
+    if (destination === 'folder') {
+      return HtmlExporter.writeToLocalFolder(cleanFolderName, packageFiles);
+    }
+
+    // Um único formato autónomo (PDF ou XLSX, sem HTML/imagens associadas): descarregar diretamente, sem .ZIP
+    if (!needsImagesFolder && packageFiles.size === 1) {
+      const [[name, blob]] = packageFiles;
+      HtmlExporter.triggerDownload(blob, name);
+      return { destination: 'zip', folderName: cleanFolderName };
+    }
+
+    return HtmlExporter.downloadAsZip(cleanFolderName, packageFiles);
+  }
+
+  static triggerDownload(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
   }
 
   /**
    * Empacota o objeto num ficheiro .ZIP e inicia o descarregamento
    */
-  static async downloadAsZip(cleanFolderName, imageFiles, metsXml, htmlContent) {
+  static async downloadAsZip(cleanFolderName, packageFiles) {
     const zip = new window.JSZip();
     const objectFolder = zip.folder(cleanFolderName);
-    const imgFolder = objectFolder.folder('images');
 
-    imageFiles.forEach((blob, relPath) => {
-      const name = relPath.replace(/^images\//, '');
-      imgFolder.file(name, blob);
+    packageFiles.forEach((content, relPath) => {
+      objectFolder.file(relPath, content);
     });
 
-    objectFolder.file('METS.xml', metsXml);
-    objectFolder.file('index.html', htmlContent);
-
     const zipBlob = await zip.generateAsync({ type: 'blob' });
-    const url = URL.createObjectURL(zipBlob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${cleanFolderName}_ObjetoHTML.zip`;
-    a.click();
-    URL.revokeObjectURL(url);
+    HtmlExporter.triggerDownload(zipBlob, `${cleanFolderName}_ObjetoHTML.zip`);
 
     return { destination: 'zip', folderName: cleanFolderName };
   }
@@ -101,9 +154,9 @@ export class HtmlExporter {
   /**
    * Escreve o objeto diretamente numa pasta local escolhida pelo utilizador (File System Access API)
    */
-  static async writeToLocalFolder(cleanFolderName, imageFiles, metsXml, htmlContent) {
+  static async writeToLocalFolder(cleanFolderName, packageFiles) {
     if (!('showDirectoryPicker' in window) || window.location.protocol === 'file:') {
-      alert('O seu navegador não suporta guardar diretamente numa pasta local. Utilize a opção de descarregar como .ZIP.');
+      alert('O seu navegador não suporta guardar diretamente numa pasta local. Utilize a opção de descarregar.');
       return null;
     }
 
@@ -127,25 +180,19 @@ export class HtmlExporter {
       objectDirHandle = await parentHandle.getDirectoryHandle(cleanFolderName, { create: true });
     }
 
-    const imagesDirHandle = await objectDirHandle.getDirectoryHandle('images', { create: true });
+    for (const [relPath, content] of packageFiles) {
+      const parts = relPath.split('/');
+      const fileName = parts.pop();
+      let dirHandle = objectDirHandle;
+      for (const part of parts) {
+        dirHandle = await dirHandle.getDirectoryHandle(part, { create: true });
+      }
 
-    for (const [relPath, blob] of imageFiles) {
-      const name = relPath.replace(/^images\//, '');
-      const fileHandle = await imagesDirHandle.getFileHandle(name, { create: true });
+      const fileHandle = await dirHandle.getFileHandle(fileName, { create: true });
       const writable = await fileHandle.createWritable();
-      await writable.write(blob);
+      await writable.write(content);
       await writable.close();
     }
-
-    const metsHandle = await objectDirHandle.getFileHandle('METS.xml', { create: true });
-    const metsWritable = await metsHandle.createWritable();
-    await metsWritable.write(metsXml);
-    await metsWritable.close();
-
-    const indexHandle = await objectDirHandle.getFileHandle('index.html', { create: true });
-    const indexWritable = await indexHandle.createWritable();
-    await indexWritable.write(htmlContent);
-    await indexWritable.close();
 
     return { destination: 'folder', folderName: cleanFolderName, dirName: parentHandle.name };
   }
@@ -227,18 +274,19 @@ export class HtmlExporter {
     .nav-tabs { display: flex; gap: 0.5rem; }
     .btn-tab { padding: 0.4rem 0.8rem; background: #334155; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 0.82rem; font-weight: 500; }
     .btn-tab.active { background: var(--accent); }
-    main { flex: 1; display: grid; grid-template-columns: 300px 1fr 340px; overflow: hidden; position: relative; }
-    .panel { background: var(--bg-side); border-right: 1px solid var(--border); overflow-y: auto; padding: 1rem; }
+    main { flex: 1; display: grid; grid-template-columns: var(--tree-w, 300px) 6px 1fr 6px var(--meta-w, 340px); overflow: hidden; position: relative; }
+    .panel { background: var(--bg-side); border-right: 1px solid var(--border); overflow-y: auto; padding: 1rem; min-width: 0; }
     .panel-right { border-right: none; border-left: 1px solid var(--border); }
-    .tree-item { padding: 0.4rem 0.6rem; border-radius: 6px; cursor: pointer; font-size: 0.85rem; margin-bottom: 0.2rem; }
+    .panel-resizer { cursor: col-resize; background: var(--border); position: relative; }
+    .panel-resizer:hover, .panel-resizer.active { background: var(--accent); }
+    .tree-item { display: flex; align-items: center; gap: 0.5rem; padding: 0.35rem 0.5rem; border-radius: 6px; cursor: pointer; font-size: 0.85rem; margin-bottom: 0.2rem; }
     .tree-item:hover { background: rgba(255,255,255,0.05); }
     .tree-item.active { background: rgba(59,130,246,0.2); color: #60a5fa; font-weight: 600; }
-    .viewport { background: #090d16; display: flex; align-items: center; justify-content: center; position: relative; padding: 1rem; overflow: auto; }
-    .viewport img { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 6px; box-shadow: 0 10px 25px rgba(0,0,0,0.5); }
-    .meta-row { margin-bottom: 0.8rem; }
-    .meta-label { font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase; font-weight: 600; margin-bottom: 0.2rem; }
-    .meta-val { font-size: 0.9rem; word-break: break-word; }
-
+    .tree-item-thumb { width: 28px; height: 28px; object-fit: cover; border-radius: 4px; flex-shrink: 0; background: #000; }
+    .tree-item-thumb-empty { width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; border-radius: 4px; background: rgba(255,255,255,0.06); font-size: 0.85rem; flex-shrink: 0; }
+    .tree-item-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+    .viewport { background: #090d16; display: flex; align-items: stretch; justify-content: center; position: relative; padding: 1rem; overflow: hidden; min-width: 0; }
+    .viewport img { flex: 1 1 auto; min-height: 0; min-width: 0; max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 6px; box-shadow: 0 10px 25px rgba(0,0,0,0.5); }
     /* Estilos da Matriz / Grelha de Entrada */
     .matrix-view { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: var(--bg-main); z-index: 20; padding: 1.5rem; overflow-y: auto; }
     .matrix-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(${matrixOpts.maxWidthPx}px, 1fr)); gap: 1.25rem; justify-items: stretch; }
@@ -248,7 +296,13 @@ export class HtmlExporter {
     .matrix-img-box img { max-width: 100%; max-height: 100%; object-fit: contain; }
     .matrix-info { padding: 0.75rem; font-size: 0.82rem; }
     .matrix-title { font-weight: 600; color: var(--text); margin-bottom: 0.25rem; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
-    .matrix-sub { font-size: 0.75rem; color: var(--text-muted); }
+
+    /* Ficha compacta de metadados, mostrada sob cada imagem na Matriz (o Leitor Individual usa a coluna Metadados) */
+    .meta-fiche { display: flex; flex-direction: column; gap: 0.15rem; }
+    .meta-fiche-row { font-size: 0.7rem; line-height: 1.35; color: var(--text-muted); word-break: break-word; }
+    .meta-fiche-label { color: var(--text); font-weight: 600; }
+    .matrix-info .meta-fiche { margin-top: 0.4rem; padding-top: 0.4rem; border-top: 1px solid var(--border); }
+    #metaView .meta-fiche-row { font-size: 0.82rem; }
   </style>
 </head>
 <body>
@@ -276,11 +330,15 @@ export class HtmlExporter {
       <div id="treeView"></div>
     </section>
 
+    <div id="treeResizer" class="panel-resizer" title="Arrastar para ajustar a largura"></div>
+
     <section class="viewport">
-      <div id="imageContainer" style="width: 100%; height: 100%; display: flex; align-items: center; justify-content: center;">
+      <div id="imageContainer" style="width: 100%; height: 100%; min-height: 0; display: flex; align-items: center; justify-content: center; overflow: hidden;">
         <p style="color: var(--text-muted);">Selecione uma imagem na árvore para visualizar</p>
       </div>
     </section>
+
+    <div id="metaResizer" class="panel-resizer" title="Arrastar para ajustar a largura"></div>
 
     <section class="panel panel-right">
       <h4 style="font-size: 0.8rem; text-transform: uppercase; color: var(--text-muted); margin-bottom: 0.75rem;">Metadados</h4>
@@ -296,6 +354,8 @@ export class HtmlExporter {
     function init() {
       buildMatrix();
       renderTree(tree, document.getElementById('treeView'));
+      initResizer('treeResizer', '--tree-w', (mainEl, e) => e.clientX - mainEl.getBoundingClientRect().left);
+      initResizer('metaResizer', '--meta-w', (mainEl, e) => mainEl.getBoundingClientRect().right - e.clientX);
       const pageNodes = [];
       collectPages(tree, pageNodes);
       if (pageNodes.length > 0) {
@@ -303,9 +363,71 @@ export class HtmlExporter {
       }
     }
 
+    // Permite arrastar para ajustar a largura dos painéis "Estrutura" e "Metadados"
+    function initResizer(resizerId, cssVar, computeWidth) {
+      const resizer = document.getElementById(resizerId);
+      const mainEl = document.querySelector('main');
+      if (!resizer || !mainEl) return;
+      let dragging = false;
+
+      resizer.addEventListener('mousedown', (e) => {
+        dragging = true;
+        resizer.classList.add('active');
+        e.preventDefault();
+      });
+
+      window.addEventListener('mousemove', (e) => {
+        if (!dragging) return;
+        const newWidth = Math.max(180, Math.min(600, computeWidth(mainEl, e)));
+        document.documentElement.style.setProperty(cssVar, newWidth + 'px');
+      });
+
+      window.addEventListener('mouseup', () => {
+        if (!dragging) return;
+        dragging = false;
+        resizer.classList.remove('active');
+      });
+    }
+
     function collectPages(node, list) {
       if (node.fileRef || node.type === 'PAGE') list.push(node);
       if (node.children) node.children.forEach(c => collectPages(c, list));
+    }
+
+    const LANGUAGE_NAMES = { por: 'Português', eng: 'Inglês', spa: 'Espanhol', lat: 'Latim' };
+
+    function escapeHtml(str) {
+      return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+
+    // Ficha compacta: lista todos os metadados preenchidos de um nó
+    function getFicheEntries(node) {
+      const m = node.metadata || {};
+      const entries = [];
+      const push = (label, value) => {
+        if (value === undefined || value === null) return;
+        const str = String(value).trim();
+        if (str !== '') entries.push({ label, value: str });
+      };
+      push('Título', m.title || node.label);
+      push('Identificador', m.identifier);
+      push('Autor / Origem', m.creator);
+      push('Data', m.date);
+      push('Língua', LANGUAGE_NAMES[m.language] || m.language);
+      push('Assunto', m.subject);
+      push('Cobertura', m.coverage);
+      push('Notas', m.notes);
+      push('Direitos', m.rights);
+      return entries;
+    }
+
+    function renderFicheHtml(node, skipTitle) {
+      let entries = getFicheEntries(node);
+      if (skipTitle) entries = entries.filter(e => e.label !== 'Título');
+      if (entries.length === 0) return '';
+      return '<div class="meta-fiche">' + entries.map(e =>
+        '<div class="meta-fiche-row"><span class="meta-fiche-label">' + escapeHtml(e.label) + ':</span> ' + escapeHtml(e.value) + '</div>'
+      ).join('') + '</div>';
     }
 
     function buildMatrix() {
@@ -326,7 +448,6 @@ export class HtmlExporter {
         };
 
         const titleText = p.label || p.metadata?.title || 'Página';
-        const subText = p.metadata?.creator || p.metadata?.date || '';
 
         card.innerHTML = \`
           <div class="matrix-img-box">
@@ -334,7 +455,7 @@ export class HtmlExporter {
           </div>
           <div class="matrix-info">
             <div class="matrix-title">\${titleText}</div>
-            <div class="matrix-sub">\${subText}</div>
+            \${renderFicheHtml(p, true)}
           </div>
         \`;
         grid.appendChild(card);
@@ -361,7 +482,14 @@ export class HtmlExporter {
       const div = document.createElement('div');
       div.className = 'tree-item' + (node.id === activeNode.id ? ' active' : '');
       div.style.paddingLeft = (depth * 1.2 + 0.6) + 'rem';
-      div.textContent = (node.type === 'PAGE' ? '📄 ' : '📁 ') + (node.label || node.type);
+
+      const imgPath = imgMap[node.id];
+      const icon = node.type === 'PAGE' ? '📄' : '📁';
+      const thumbHtml = imgPath
+        ? '<img class="tree-item-thumb" src="' + imgPath + '" alt="">'
+        : '<span class="tree-item-thumb-empty">' + icon + '</span>';
+      div.innerHTML = thumbHtml + '<span class="tree-item-label">' + escapeHtml(node.label || node.type) + '</span>';
+
       div.onclick = () => selectNode(node);
       container.appendChild(div);
 
@@ -384,14 +512,7 @@ export class HtmlExporter {
       }
 
       const metaView = document.getElementById('metaView');
-      const m = node.metadata || {};
-      metaView.innerHTML = \`
-        <div class="meta-row"><div class="meta-label">Título / Rótulo</div><div class="meta-val">\${m.title || node.label || '-'}</div></div>
-        <div class="meta-row"><div class="meta-label">Autor / Criador</div><div class="meta-val">\${m.creator || '-'}</div></div>
-        <div class="meta-row"><div class="meta-label">Data</div><div class="meta-val">\${m.date || '-'}</div></div>
-        <div class="meta-row"><div class="meta-label">Assunto / Cobertura</div><div class="meta-val">\${m.subject || m.coverage || '-'}</div></div>
-        <div class="meta-row"><div class="meta-label">Notas / Direitos</div><div class="meta-val">\${m.rights || '-'}</div></div>
-      \`;
+      metaView.innerHTML = renderFicheHtml(node) || '<p style="color: var(--text-muted); font-size: 0.85rem;">Sem metadados preenchidos.</p>';
     }
 
     init();

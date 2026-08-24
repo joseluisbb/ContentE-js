@@ -10,6 +10,10 @@ ephemera-originais/
 # Legacy / external references
 ContentE-java/
 
+# Electron packaging
+node_modules/
+release/
+
 # IDE / System files
 .vscode/
 .gemini/

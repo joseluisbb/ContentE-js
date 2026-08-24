@@ -9,8 +9,7 @@ import { TreeManager } from './core/treeManager.js';
 import { MetsExporter } from './core/metsExporter.js';
 import { EphemeraImporter } from './core/ephemeraImporter.js';
 import { HtmlExporter } from './core/htmlExporter.js';
-import { HtmlImporter } from './core/htmlImporter.js';
-import { OrientationDetector } from './core/orientationDetector.js';
+import { ObjectOpener } from './core/objectOpener.js';
 
 class App {
   constructor() {
@@ -21,10 +20,8 @@ class App {
 
     this.zoomLevel = 1.0;
     this.isMatrixViewActive = false;
-    this.lastOrientationSuggestion = null;
     this.selectedMatrixNodeIds = new Set();
     this.lastMatrixClickedIndex = null;
-    this.matrixSuggestionsMap = new Map();
     this.fileUrlCache = new WeakMap();
 
     this.initUI();
@@ -42,6 +39,7 @@ class App {
     this.treeManager.createRoot('BOOK', 'Álbum / Coleção Digital');
     this.populateNodeTypeSelects();
     this.bindEvents();
+    this.initTreePanelResizer();
 
     this.renderTree();
     this.renderSelectedNodeMetadata();
@@ -49,6 +47,33 @@ class App {
     if (window.lucide) {
       window.lucide.createIcons();
     }
+  }
+
+  // Permite arrastar para ajustar a largura do painel "Estrutura Documental"
+  initTreePanelResizer() {
+    const resizer = document.getElementById('treePanelResizer');
+    const workspace = document.querySelector('.workspace-main');
+    if (!resizer || !workspace) return;
+    let dragging = false;
+
+    resizer.addEventListener('mousedown', (e) => {
+      dragging = true;
+      resizer.classList.add('active');
+      e.preventDefault();
+    });
+
+    window.addEventListener('mousemove', (e) => {
+      if (!dragging) return;
+      const rect = workspace.getBoundingClientRect();
+      const newWidth = Math.max(220, Math.min(600, e.clientX - rect.left));
+      document.documentElement.style.setProperty('--tree-panel-w', newWidth + 'px');
+    });
+
+    window.addEventListener('mouseup', () => {
+      if (!dragging) return;
+      dragging = false;
+      resizer.classList.remove('active');
+    });
   }
 
   populateNodeTypeSelects() {
@@ -75,134 +100,91 @@ class App {
       this.renderThumbnails();
     });
 
-    // Botão Pasta Local
-    document.getElementById('btnOpenFolder')?.addEventListener('click', async () => {
-      if ('showDirectoryPicker' in window && window.location.protocol !== 'file:') {
-        try {
-          const handle = await window.showDirectoryPicker({ mode: 'read' });
-          this.fileSystem.directoryHandle = handle;
-          this.fileSystem.fileEntries.clear();
-          await this.fileSystem.scanDirectory(handle);
-          document.getElementById('statusFolder').textContent = `Pasta: ${handle.name} (${this.fileSystem.fileEntries.size} ficheiros)`;
-          this.processImportedFiles();
-          return;
-        } catch (err) {
-          if (err.name === 'AbortError') return;
-          console.warn('showDirectoryPicker falhou, a usar input fallback:', err);
-        }
-      }
-      document.getElementById('folderInputFallback')?.click();
-    });
-
-    // Botão Ficheiros de Imagem
-    document.getElementById('btnOpenFiles')?.addEventListener('click', () => {
-      document.getElementById('imageFilesInput')?.click();
-    });
-
-    // Evento de Seleção de Imagens
-    document.getElementById('imageFilesInput')?.addEventListener('change', (e) => {
-      if (e.target.files && e.target.files.length > 0) {
-        const fileList = Array.from(e.target.files).map(file => ({
-          name: file.name,
-          relPath: file.name,
-          file: file,
-          size: file.size,
-          type: file.type || this.fileSystem.inferMimeType(file.name)
-        }));
-
-        const imageFiles = fileList.filter(f => f.type.startsWith('image/'));
-        if (imageFiles.length > 0) {
-          this.treeManager.addFilesAsPages(this.treeManager.root.id, imageFiles);
-          document.getElementById('statusMessage').textContent = `${imageFiles.length} imagens importadas com sucesso!`;
-          document.getElementById('statusFolder').textContent = `${imageFiles.length} imagens selecionadas`;
-          this.renderThumbnails(imageFiles);
-
-          const pageNodes = this.treeManager.root.children.filter(c => c.fileRef);
-          if (pageNodes.length > 0) {
-            this.treeManager.selectNode(pageNodes[0].id);
-          }
-        } else {
-          alert('Nenhum ficheiro de imagem válido selecionado.');
-        }
-      }
-    });
-
-    // Botão Importar XLSX / Numbers
-    document.getElementById('btnImportEphemera')?.addEventListener('click', () => {
-      document.getElementById('ephemeraFileInput')?.click();
-    });
-
-    document.getElementById('ephemeraFileInput')?.addEventListener('change', async (e) => {
-      const file = e.target.files[0];
-      if (file) {
-        await this.handleEphemeraImport(file);
-      }
-    });
-
-    // Fallback de Seleção de Pasta
-    document.getElementById('folderInputFallback')?.addEventListener('change', (e) => {
-      if (e.target.files && e.target.files.length > 0) {
-        const res = this.fileSystem.handleFileInputList(e.target.files);
-        if (res.success) {
-          document.getElementById('statusFolder').textContent = `Pasta carregada (${res.count} ficheiros)`;
-          this.processImportedFiles();
-        }
-      }
-    });
-
     // Eventos de Drag & Drop (Arrastar e Largar)
-    const overlay = document.getElementById('dragDropOverlay');
-
     ['dragenter', 'dragover'].forEach(eventName => {
       window.addEventListener(eventName, (e) => {
+        if (!this.isExternalFileDrag(e)) return;
         e.preventDefault();
         e.stopPropagation();
-        if (overlay) overlay.style.display = 'flex';
       });
     });
 
-    ['dragleave', 'dragend'].forEach(eventName => {
-      window.addEventListener(eventName, (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        if (e.target === overlay || e.clientX === 0 || e.clientY === 0) {
-          if (overlay) overlay.style.display = 'none';
-        }
-      });
-    });
-
+    // Largar fora da árvore: só as tabelas (.xlsx/.numbers) são aceites aqui;
+    // imagens têm de ser largadas sobre a árvore, à esquerda, para indicar a posição
     window.addEventListener('drop', async (e) => {
+      if (!this.isExternalFileDrag(e)) return;
       e.preventDefault();
       e.stopPropagation();
-      if (overlay) overlay.style.display = 'none';
 
       if (e.dataTransfer) {
-        await this.handleDroppedData(e.dataTransfer);
+        await this.handleWindowDrop(e.dataTransfer);
       }
     });
 
-    // Abrir Modal de Opções de Exportação de Objeto HTML
-    document.getElementById('btnExportHtmlPackage')?.addEventListener('click', () => {
-      const modal = document.getElementById('modalExportConfig');
+    // Largar sobre a árvore (fora de um nó específico) insere as imagens no final da raiz
+    const treePanel = document.getElementById('treePanel');
+    treePanel?.addEventListener('dragover', (e) => {
+      if (!this.isExternalFileDrag(e)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      e.dataTransfer.dropEffect = 'copy';
+    });
+
+    treePanel?.addEventListener('drop', async (e) => {
+      if (!this.isExternalFileDrag(e)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      await this.handleTreeDrop(e.dataTransfer, this.treeManager.root, false);
+    });
+
+    // Abrir Modal de Opções de Gravação (HTML e/ou PDF)
+    document.getElementById('btnSaveObject')?.addEventListener('click', () => {
+      const modal = document.getElementById('modalSaveOptions');
       if (modal) modal.style.display = 'flex';
     });
 
-    document.getElementById('btnCloseExportModal')?.addEventListener('click', () => this.closeExportModal());
-    document.getElementById('btnCancelExportModal')?.addEventListener('click', () => this.closeExportModal());
+    document.getElementById('btnCloseSaveModal')?.addEventListener('click', () => this.closeSaveModal());
+    document.getElementById('btnCancelSaveModal')?.addEventListener('click', () => this.closeSaveModal());
 
-    // Confirmar Geração do HTML com Definições da Matriz (Largura de Referência em Pixéis, colunas automáticas) e Destino
-    document.getElementById('btnConfirmExportHtml')?.addEventListener('click', async () => {
+    // As opções da Matriz aplicam-se ao HTML e/ou ao PDF — só se ocultam se nenhum dos dois estiver selecionado
+    document.getElementById('genHtmlCheck')?.addEventListener('change', () => this.updateMatrixOptionsVisibility());
+    document.getElementById('genPdfCheck')?.addEventListener('change', () => this.updateMatrixOptionsVisibility());
+
+    // Confirmar Gravação: gerar HTML, PDF e/ou XLSX (Matriz e Destino aplicam-se conforme a seleção)
+    document.getElementById('btnConfirmSave')?.addEventListener('click', async () => {
+      const generateHtml = document.getElementById('genHtmlCheck').checked;
+      const generatePdf = document.getElementById('genPdfCheck').checked;
+      const generateXlsx = document.getElementById('genXlsxCheck').checked;
+
+      if (!generateHtml && !generatePdf && !generateXlsx) {
+        alert('Selecione pelo menos uma opção: Gerar HTML, Gerar PDF ou Gerar XLSX.');
+        return;
+      }
+
       const enabled = document.getElementById('matrixEnableCheck').checked;
       const maxPx = parseInt(document.getElementById('matrixMaxWidthInput').value, 10) || 220;
       const destination = document.querySelector('input[name="exportDestination"]:checked')?.value || 'zip';
 
-      this.closeExportModal();
+      const displacedIds = this.computeDisplacedNodeIds(this.treeManager.root);
+      if (displacedIds.size > 0) {
+        const shouldRename = confirm(`Existem ${displacedIds.size} imagem(ns) fora da ordem alfabética original do nome do ficheiro.\n\nPretende renomear os ficheiros de acordo com a ordem atual?`);
+        if (shouldRename) {
+          this.renameDisplacedToMatchOrder(this.treeManager.root);
+          this.treeManager.notify();
+        }
+      }
+
+      this.closeSaveModal();
+      const formatLabel = [generateHtml && 'HTML', generatePdf && 'PDF', generateXlsx && 'XLSX'].filter(Boolean).join(' + ');
       document.getElementById('statusMessage').textContent = destination === 'folder'
-        ? 'A guardar HTML na pasta local escolhida...'
-        : 'A gerar HTML com Matriz de Entrada...';
+        ? `A guardar ${formatLabel} na pasta local escolhida...`
+        : `A gerar ${formatLabel}...`;
 
       try {
-        const result = await HtmlExporter.exportHtmlPackage(this.treeManager.root, {
+        const result = await HtmlExporter.exportObject(this.treeManager.root, {
+          generateHtml,
+          generatePdf,
+          generateXlsx,
           matrixEnabled: enabled,
           matrixMaxPx: maxPx,
           destination
@@ -214,37 +196,18 @@ class App {
         }
 
         document.getElementById('statusMessage').textContent = destination === 'folder'
-          ? 'HTML guardado com sucesso na pasta local escolhida!'
-          : 'HTML descarregado com sucesso!';
+          ? `${formatLabel} guardado com sucesso na pasta local escolhida!`
+          : `${formatLabel} gerado com sucesso!`;
       } catch (err) {
-        console.error('Erro ao gerar HTML:', err);
-        alert(`Falha ao gerar o HTML: ${err.message}`);
-        document.getElementById('statusMessage').textContent = 'Erro ao gerar HTML.';
+        console.error('Erro ao gravar objeto:', err);
+        alert(`Falha ao gravar: ${err.message}`);
+        document.getElementById('statusMessage').textContent = 'Erro ao gravar.';
       }
     });
 
-    // Abrir Modal "Abrir Objeto Já Criado"
-    document.getElementById('btnOpenObject')?.addEventListener('click', () => {
-      const modal = document.getElementById('modalOpenObject');
-      if (modal) modal.style.display = 'flex';
-    });
-
-    document.getElementById('btnCloseOpenObjectModal')?.addEventListener('click', () => this.closeOpenObjectModal());
-    document.getElementById('btnCancelOpenObjectModal')?.addEventListener('click', () => this.closeOpenObjectModal());
-
-    document.getElementById('btnOpenObjectZip')?.addEventListener('click', () => {
-      this.closeOpenObjectModal();
-      document.getElementById('openObjectZipInput')?.click();
-    });
-
-    document.getElementById('openObjectZipInput')?.addEventListener('change', async (e) => {
-      const file = e.target.files[0];
-      e.target.value = '';
-      if (file) await this.handleOpenObjectZip(file);
-    });
-
-    document.getElementById('btnOpenObjectFolder')?.addEventListener('click', async () => {
-      this.closeOpenObjectModal();
+    // Abrir Pasta: vai diretamente ao seletor de pastas do sistema, sem modal de escolha prévia.
+    // Para abrir um ficheiro .zip/.xlsx/.numbers, arraste-o para a árvore.
+    document.getElementById('btnOpenObject')?.addEventListener('click', async () => {
       if ('showDirectoryPicker' in window && window.location.protocol !== 'file:') {
         try {
           const handle = await window.showDirectoryPicker({ mode: 'read' });
@@ -297,20 +260,6 @@ class App {
       if (this.isMatrixViewActive) this.renderMatrixGridInCanvas();
     });
 
-    document.getElementById('btnMoveUp')?.addEventListener('click', () => {
-      if (this.treeManager.selectedNodeId) {
-        this.treeManager.moveNodeUp(this.treeManager.selectedNodeId);
-        if (this.isMatrixViewActive) this.renderMatrixGridInCanvas();
-      }
-    });
-
-    document.getElementById('btnMoveDown')?.addEventListener('click', () => {
-      if (this.treeManager.selectedNodeId) {
-        this.treeManager.moveNodeDown(this.treeManager.selectedNodeId);
-        if (this.isMatrixViewActive) this.renderMatrixGridInCanvas();
-      }
-    });
-
     document.getElementById('btnDeleteNode')?.addEventListener('click', () => {
       if (this.treeManager.selectedNodeId) {
         this.treeManager.removeNode(this.treeManager.selectedNodeId);
@@ -318,7 +267,7 @@ class App {
       }
     });
 
-    const metaInputs = ['metaTitle', 'metaCreator', 'metaDate', 'metaLanguage', 'metaRights', 'nodeTypeSelect'];
+    const metaInputs = ['metaTitle', 'metaCreator', 'metaDate', 'metaLanguage', 'metaNotes', 'metaRights', 'nodeTypeSelect'];
     metaInputs.forEach(id => {
       document.getElementById(id)?.addEventListener('input', () => this.saveMetadataFromForm());
       document.getElementById(id)?.addEventListener('change', () => this.saveMetadataFromForm());
@@ -337,11 +286,6 @@ class App {
           this.updateXmlPreview();
         }
       });
-    });
-
-    document.getElementById('btnExportMets')?.addEventListener('click', () => {
-      const xmlString = MetsExporter.exportMetsXml(this.treeManager.root);
-      this.downloadFile('METS.xml', xmlString, 'text/xml');
     });
 
     document.getElementById('btnZoomIn')?.addEventListener('click', () => {
@@ -368,24 +312,6 @@ class App {
 
     document.getElementById('btnTreeRotateCCW')?.addEventListener('click', () => {
       this.rotateSelectedNode(-90);
-    });
-
-    // Auto-deteção de orientação individual
-    document.getElementById('btnAutoDetect')?.addEventListener('click', async () => {
-      await this.autoDetectCurrentNodeOrientation();
-    });
-
-    // Aplicar sugestão de orientação
-    document.getElementById('btnApplyOrientationSuggestion')?.addEventListener('click', () => {
-      if (this.lastOrientationSuggestion) {
-        this.rotateSelectedNode(this.lastOrientationSuggestion.suggestedRotation);
-        document.getElementById('orientationSuggestionContainer').style.display = 'none';
-      }
-    });
-
-    // Auto-deteção em lote para todas as páginas da coleção
-    document.getElementById('btnAutoDetectAll')?.addEventListener('click', async () => {
-      await this.autoDetectAllOrientations();
     });
 
     document.getElementById('btnCalcHash')?.addEventListener('click', async () => {
@@ -449,14 +375,17 @@ class App {
     if (modal) modal.style.display = 'none';
   }
 
-  closeExportModal() {
-    const modal = document.getElementById('modalExportConfig');
+  closeSaveModal() {
+    const modal = document.getElementById('modalSaveOptions');
     if (modal) modal.style.display = 'none';
   }
 
-  closeOpenObjectModal() {
-    const modal = document.getElementById('modalOpenObject');
-    if (modal) modal.style.display = 'none';
+  updateMatrixOptionsVisibility() {
+    const group = document.getElementById('matrixOptionsGroup');
+    if (!group) return;
+    const htmlEnabled = document.getElementById('genHtmlCheck')?.checked;
+    const pdfEnabled = document.getElementById('genPdfCheck')?.checked;
+    group.style.display = (htmlEnabled || pdfEnabled) ? 'block' : 'none';
   }
 
   confirmReplaceCurrentObject() {
@@ -466,13 +395,16 @@ class App {
     return confirm('Já existe um objeto aberto com conteúdo. Abrir um novo objeto irá substituir o trabalho atual não guardado. Deseja continuar?');
   }
 
-  loadImportedRoot(root) {
-    this.treeManager.loadTree(root);
+  resetViewStateForNewObject() {
     this.fileUrlCache = new WeakMap();
     this.selectedMatrixNodeIds.clear();
-    this.matrixSuggestionsMap.clear();
     this.isMatrixViewActive = false;
     this.updateViewerToolbarUI();
+  }
+
+  loadImportedRoot(root) {
+    this.treeManager.loadTree(root);
+    this.resetViewStateForNewObject();
 
     const pageNodes = [];
     this.collectPagesRecursive(root, pageNodes);
@@ -482,71 +414,84 @@ class App {
     }
   }
 
-  async handleOpenObjectZip(file) {
-    if (!this.confirmReplaceCurrentObject()) return;
-    document.getElementById('statusMessage').textContent = `A abrir objeto a partir de "${file.name}"...`;
-    try {
-      const root = await HtmlImporter.loadFromZipFile(file);
-      this.loadImportedRoot(root);
-      document.getElementById('statusMessage').textContent = `Objeto "${root.label}" aberto com sucesso a partir do ZIP.`;
-      document.getElementById('statusFolder').textContent = `Objeto: ${file.name}`;
-    } catch (err) {
-      console.error('Erro ao abrir objeto ZIP:', err);
-      alert(`Falha ao abrir o objeto: ${err.message}`);
-      document.getElementById('statusMessage').textContent = 'Erro ao abrir objeto.';
+  /**
+   * Ponto de entrada para abrir um ficheiro .zip/.xlsx/.numbers (arrastado para a árvore):
+   * deteta automaticamente se é um ficheiro Ephemera (.xlsx/.numbers) ou um .zip
+   * (obra previamente gerada ou apenas imagens)
+   */
+  async handleOpenObjectFile(file) {
+    const lower = file.name.toLowerCase();
+
+    if (lower.endsWith('.xlsx') || lower.endsWith('.numbers')) {
+      if (!this.confirmReplaceCurrentObject()) return;
+      document.getElementById('statusMessage').textContent = `A abrir ficheiro Ephemera "${file.name}" (.xlsx/.numbers)...`;
+      await this.handleEphemeraImport(file);
+      this.resetViewStateForNewObject();
+      return;
     }
+
+    if (lower.endsWith('.zip')) {
+      if (!this.confirmReplaceCurrentObject()) return;
+      document.getElementById('statusMessage').textContent = `A analisar conteúdo do ZIP "${file.name}"...`;
+      try {
+        const result = await ObjectOpener.openZipFile(file);
+        this.loadImportedRoot(result.root);
+        document.getElementById('statusMessage').textContent = ObjectOpener.describeResult(result, `ZIP "${file.name}"`);
+        document.getElementById('statusFolder').textContent = `Ficheiro: ${file.name}`;
+      } catch (err) {
+        console.error('Erro ao abrir ZIP:', err);
+        alert(`Falha ao abrir o ficheiro: ${err.message}`);
+        document.getElementById('statusMessage').textContent = 'Erro ao abrir objeto.';
+      }
+      return;
+    }
+
+    alert('Formato não suportado. Selecione um ficheiro .zip, .xlsx ou .numbers.');
   }
 
+  /**
+   * Ponto de entrada do botão "Abrir Pasta" (File System Access API):
+   * deteta automaticamente se a pasta contém uma obra previamente gerada ou apenas imagens
+   */
   async handleOpenObjectDirectoryHandle(handle) {
     if (!this.confirmReplaceCurrentObject()) return;
-    document.getElementById('statusMessage').textContent = `A abrir objeto a partir da pasta "${handle.name}"...`;
+    document.getElementById('statusMessage').textContent = `A analisar pasta "${handle.name}"...`;
     try {
-      const root = await HtmlImporter.loadFromDirectoryHandle(handle);
-      this.loadImportedRoot(root);
-      document.getElementById('statusMessage').textContent = `Objeto "${root.label}" aberto com sucesso a partir da pasta.`;
-      document.getElementById('statusFolder').textContent = `Objeto: ${handle.name}`;
+      const result = await ObjectOpener.openDirectoryHandle(handle);
+      this.loadImportedRoot(result.root);
+      document.getElementById('statusMessage').textContent = ObjectOpener.describeResult(result, `pasta "${handle.name}"`);
+      document.getElementById('statusFolder').textContent = `Pasta: ${handle.name}`;
     } catch (err) {
-      console.error('Erro ao abrir objeto da pasta:', err);
-      alert(`Falha ao abrir o objeto: ${err.message}`);
+      console.error('Erro ao abrir pasta:', err);
+      alert(`Falha ao abrir a pasta: ${err.message}`);
       document.getElementById('statusMessage').textContent = 'Erro ao abrir objeto.';
     }
   }
 
+  /**
+   * Fallback do botão "Abrir Pasta" em navegadores sem File System Access API
+   */
   async handleOpenObjectFileList(fileList) {
     if (!this.confirmReplaceCurrentObject()) return;
-    document.getElementById('statusMessage').textContent = 'A abrir objeto a partir da pasta selecionada...';
+    const folderLabel = fileList[0]?.webkitRelativePath?.split('/')[0] || 'Pasta Selecionada';
+    document.getElementById('statusMessage').textContent = `A analisar pasta "${folderLabel}"...`;
     try {
-      const root = await HtmlImporter.loadFromFileInputList(fileList);
-      this.loadImportedRoot(root);
-      document.getElementById('statusMessage').textContent = `Objeto "${root.label}" aberto com sucesso.`;
-      document.getElementById('statusFolder').textContent = 'Objeto aberto a partir de pasta local';
+      const result = await ObjectOpener.openFolderFileList(fileList, folderLabel);
+      this.loadImportedRoot(result.root);
+      document.getElementById('statusMessage').textContent = ObjectOpener.describeResult(result, `pasta "${folderLabel}"`);
+      document.getElementById('statusFolder').textContent = `Pasta: ${folderLabel}`;
     } catch (err) {
-      console.error('Erro ao abrir objeto:', err);
-      alert(`Falha ao abrir o objeto: ${err.message}`);
+      console.error('Erro ao abrir pasta:', err);
+      alert(`Falha ao abrir a pasta: ${err.message}`);
       document.getElementById('statusMessage').textContent = 'Erro ao abrir objeto.';
     }
   }
 
-  processImportedFiles() {
-    const files = this.fileSystem.getFileList();
-    const imageFiles = files.filter(f => f.type.startsWith('image/'));
-
-    if (imageFiles.length > 0) {
-      this.treeManager.addFilesAsPages(this.treeManager.root.id, imageFiles);
-      document.getElementById('statusMessage').textContent = `${imageFiles.length} imagens associadas com sucesso!`;
-      this.renderThumbnails(imageFiles);
-
-      const pageNodes = this.treeManager.root.children.filter(c => c.fileRef);
-      if (pageNodes.length > 0) {
-        this.treeManager.selectNode(pageNodes[0].id);
-      }
-    } else {
-      alert('Nenhum ficheiro de imagem válido encontrado.');
-    }
+  isExternalFileDrag(e) {
+    return Array.from(e.dataTransfer?.types || []).includes('Files');
   }
 
-  async handleDroppedData(dataTransfer) {
-    document.getElementById('statusMessage').textContent = 'A processar elementos arrastados...';
+  async collectDroppedFiles(dataTransfer) {
     const files = [];
 
     const readEntry = async (entry, path = '') => {
@@ -607,31 +552,108 @@ class App {
       }
     }
 
+    return files;
+  }
+
+  /**
+   * Largar fora da árvore (ex: sobre o visualizador central): só tabelas são aceites aqui;
+   * imagens têm de ser largadas sobre a árvore para se saber onde inserir cada uma
+   */
+  async handleWindowDrop(dataTransfer) {
+    const files = await this.collectDroppedFiles(dataTransfer);
     if (files.length === 0) return;
 
-    // Verificar se existe alguma folha de cálculo (.xlsx ou .numbers)
     const spreadsheet = files.find(f => f.name.endsWith('.xlsx') || f.name.endsWith('.numbers'));
     if (spreadsheet) {
       await this.handleEphemeraImport(spreadsheet.file);
       return;
     }
 
-    // Filtrar ficheiros de imagem
     const imageFiles = files.filter(f => f.type.startsWith('image/'));
     if (imageFiles.length > 0) {
-      this.treeManager.addFilesAsPages(this.treeManager.root.id, imageFiles);
-      document.getElementById('statusMessage').textContent = `${imageFiles.length} imagens importadas com sucesso!`;
-      document.getElementById('statusFolder').textContent = `${imageFiles.length} imagens arrastadas`;
-      this.renderThumbnails(imageFiles);
-
-      const pageNodes = this.treeManager.root.children.filter(c => c.fileRef);
-      if (pageNodes.length > 0) {
-        this.treeManager.selectNode(pageNodes[0].id);
-      }
+      document.getElementById('statusMessage').textContent = 'Para adicionar imagens, largue-as sobre a árvore, à esquerda.';
     } else {
       alert('Nenhum ficheiro de imagem ou tabela suportada encontrada.');
       document.getElementById('statusMessage').textContent = 'Pronto';
     }
+  }
+
+  /**
+   * Largar sobre a árvore: tabelas continuam a ser importadas normalmente; imagens são
+   * inseridas na posição largada (antes/depois de targetNode, ou como filhas se for estrutural)
+   */
+  async handleTreeDrop(dataTransfer, targetNode, placeBefore) {
+    document.getElementById('statusMessage').textContent = 'A processar elementos arrastados...';
+    const files = await this.collectDroppedFiles(dataTransfer);
+    if (files.length === 0) return;
+
+    // Um ZIP largado sobre a árvore é tratado como "abrir objeto" (obra gerada ou apenas imagens)
+    const zip = files.find(f => f.name.toLowerCase().endsWith('.zip'));
+    if (zip) {
+      await this.handleOpenObjectFile(zip.file);
+      return;
+    }
+
+    const spreadsheet = files.find(f => f.name.endsWith('.xlsx') || f.name.endsWith('.numbers'));
+    if (spreadsheet) {
+      await this.handleEphemeraImport(spreadsheet.file);
+      return;
+    }
+
+    const imageFiles = files.filter(f => f.type.startsWith('image/'));
+    if (imageFiles.length === 0) {
+      alert('Nenhum ficheiro de imagem suportado encontrado.');
+      document.getElementById('statusMessage').textContent = 'Pronto';
+      return;
+    }
+
+    this.insertDroppedImages(imageFiles, targetNode, placeBefore);
+  }
+
+  /**
+   * Insere as imagens largadas como novos nós PAGE na posição indicada pelo drop:
+   * como irmãs de targetNode (antes/depois) se for uma página, ou como suas filhas se for estrutural
+   */
+  insertDroppedImages(imageFiles, targetNode, placeBefore) {
+    const sortedFiles = imageFiles
+      .slice()
+      .sort((a, b) => (a.name || '').localeCompare(b.name || '', undefined, { numeric: true, sensitivity: 'base' }));
+
+    const baseId = 'node_' + Date.now();
+    const newNodes = sortedFiles.map((fileObj, idx) => {
+      const label = fileObj.name.replace(/\.[^/.]+$/, '');
+      return {
+        id: `${baseId}_${idx}`,
+        type: 'PAGE',
+        label,
+        metadata: { title: label, filename: fileObj.name, mimeType: fileObj.type, size: fileObj.size },
+        fileRef: fileObj,
+        children: [],
+        expanded: false
+      };
+    });
+
+    let parentNode;
+    let insertIdx;
+
+    if (targetNode && targetNode.fileRef) {
+      parentNode = this.treeManager.findParentNode(this.treeManager.root, targetNode.id) || this.treeManager.root;
+      const idx = parentNode.children.findIndex(c => c.id === targetNode.id);
+      insertIdx = idx === -1 ? parentNode.children.length : (placeBefore ? idx : idx + 1);
+    } else if (targetNode && targetNode.children) {
+      parentNode = targetNode;
+      insertIdx = parentNode.children.length;
+      parentNode.expanded = true;
+    } else {
+      parentNode = this.treeManager.root;
+      insertIdx = parentNode.children.length;
+    }
+
+    parentNode.children.splice(insertIdx, 0, ...newNodes);
+    this.resequenceNaturalOrder(parentNode);
+    this.treeManager.selectNode(newNodes[0].id);
+    this.renderThumbnails(true);
+    document.getElementById('statusMessage').textContent = `${newNodes.length} imagem(ns) adicionada(s) à árvore.`;
   }
 
   renderTree() {
@@ -647,10 +669,92 @@ class App {
     const count = this.countNodes(this.treeManager.root);
     document.getElementById('nodeCountBadge').textContent = `${count} nós`;
 
+    this.displacedNodeIds = this.computeDisplacedNodeIds(this.treeManager.root);
+
     const treeHtml = this.renderNodeRecursive(this.treeManager.root);
     container.appendChild(treeHtml);
 
     if (window.lucide) window.lucide.createIcons();
+  }
+
+  /**
+   * Deteta páginas cuja posição atual entre os irmãos não corresponde à ordem "natural"
+   * estabelecida no momento em que entraram na árvore (metadata.naturalOrderIndex) — essa
+   * ordem de referência não é sempre alfabética: numa importação Ephemera, por exemplo, é a
+   * ordem das linhas da folha de cálculo. Grupos sem essa informação (objetos antigos/legado)
+   * são ignorados, para nunca assinalar falsos positivos por falta de dados.
+   */
+  computeDisplacedNodeIds(root) {
+    const displaced = new Set();
+    if (!root) return displaced;
+
+    const walk = (node) => {
+      if (node.children && node.children.length > 0) {
+        const pageSiblings = node.children.filter(c => c.fileRef);
+        const allHaveIndex = pageSiblings.length > 1 && pageSiblings.every(c => typeof c.metadata?.naturalOrderIndex === 'number');
+
+        if (allHaveIndex) {
+          const naturalOrder = [...pageSiblings].sort((a, b) => a.metadata.naturalOrderIndex - b.metadata.naturalOrderIndex);
+          pageSiblings.forEach((sibling, idx) => {
+            if (naturalOrder[idx].id !== sibling.id) displaced.add(sibling.id);
+          });
+        }
+        node.children.forEach(walk);
+      }
+    };
+
+    walk(root);
+    return displaced;
+  }
+
+  /**
+   * Atribui/atualiza sequencialmente metadata.naturalOrderIndex a todas as páginas filhas
+   * de parentNode, refletindo a sua posição ATUAL — usado quando a ordem corrente passa a
+   * ser aceite como a nova referência (ex: após inserir imagens ou renomear para corrigir desvios)
+   */
+  resequenceNaturalOrder(parentNode) {
+    if (!parentNode?.children) return;
+    parentNode.children
+      .filter(c => c.fileRef)
+      .forEach((child, idx) => {
+        child.metadata = { ...child.metadata, naturalOrderIndex: idx };
+      });
+  }
+
+  /**
+   * Renomeia os ficheiros de imagem de cada grupo de irmãos para que a ordenação
+   * alfabética futura reproduza a ordem atual (por posição), corrigindo o desvio,
+   * e atualiza a referência natural para a posição atual (o desvio fica resolvido)
+   */
+  renameDisplacedToMatchOrder(root) {
+    if (!root) return 0;
+    let renamedCount = 0;
+
+    const walk = (node) => {
+      if (node.children && node.children.length > 0) {
+        const pageSiblings = node.children.filter(c => c.fileRef);
+        pageSiblings.forEach((child, idx) => {
+          const currentName = child.fileRef.name;
+          const dotIdx = currentName.lastIndexOf('.');
+          const ext = dotIdx > 0 ? currentName.slice(dotIdx + 1) : '';
+          const baseName = (dotIdx > 0 ? currentName.slice(0, dotIdx) : currentName).replace(/^\d{3}_/, '');
+          const prefix = (idx + 1).toString().padStart(3, '0');
+          const newName = ext ? `${prefix}_${baseName}.${ext}` : `${prefix}_${baseName}`;
+
+          if (newName !== currentName) {
+            const newFile = new File([child.fileRef.file], newName, { type: child.fileRef.type });
+            child.fileRef = { ...child.fileRef, name: newName, file: newFile };
+            child.metadata = { ...child.metadata, filename: newName };
+            renamedCount++;
+          }
+        });
+        this.resequenceNaturalOrder(node);
+        node.children.forEach(walk);
+      }
+    };
+
+    walk(root);
+    return renamedCount;
   }
 
   countNodes(node) {
@@ -661,16 +765,27 @@ class App {
     return c;
   }
 
+  toggleNodeExpanded(nodeId) {
+    const node = this.treeManager.findNode(this.treeManager.root, nodeId);
+    if (!node) return;
+    node.expanded = !node.expanded;
+    this.renderTree();
+  }
+
   renderNodeRecursive(node) {
     const typeDef = this.schemaManager.getNodeType(node.type);
     const isSelected = node.id === this.treeManager.selectedNodeId;
     const rotation = node.metadata?.rotation || 0;
+    const hasChildren = !!(node.children && node.children.length > 0);
 
     const divNode = document.createElement('div');
     divNode.className = 'tree-node';
 
+    const isDisplaced = !!this.displacedNodeIds?.has(node.id);
+
     const divContent = document.createElement('div');
-    divContent.className = `tree-node-content ${isSelected ? 'selected' : ''}`;
+    divContent.className = `tree-node-content ${isSelected ? 'selected' : ''} ${isDisplaced ? 'displaced' : ''}`;
+    divContent.draggable = true;
     divContent.onclick = (e) => {
       e.stopPropagation();
       this.isMatrixViewActive = false;
@@ -678,17 +793,84 @@ class App {
     };
 
     const rotationBadge = rotation !== 0 ? `<span class="tree-node-badge" style="background:#7c3aed; color:white;">🔄 ${rotation}°</span>` : '';
+    const displacedBadge = isDisplaced ? `<span class="tree-node-badge" style="background:var(--accent-amber); color:#1a1200;" title="Posição diferente da ordenação alfabética original do nome do ficheiro">⚠</span>` : '';
+
+    const toggleHtml = hasChildren
+      ? `<span class="tree-node-toggle" title="${node.expanded ? 'Colapsar' : 'Expandir'}"><i data-lucide="${node.expanded ? 'chevron-down' : 'chevron-right'}"></i></span>`
+      : `<span class="tree-node-toggle-spacer"></span>`;
+
+    const iconHtml = node.fileRef?.file
+      ? `<img class="tree-node-thumb" src="${this.getFileUrl(node.fileRef.file)}" alt="">`
+      : `<span class="tree-node-icon"><i data-lucide="${typeDef.icon || 'file'}"></i></span>`;
 
     divContent.innerHTML = `
-      <span class="tree-node-icon"><i data-lucide="${typeDef.icon || 'file'}"></i></span>
+      ${toggleHtml}
+      ${iconHtml}
       <span class="tree-node-label">${node.label}</span>
       ${rotationBadge}
+      ${displacedBadge}
       <span class="tree-node-badge">${typeDef.namePt}</span>
     `;
 
+    if (hasChildren) {
+      divContent.querySelector('.tree-node-toggle').onclick = (e) => {
+        e.stopPropagation();
+        this.toggleNodeExpanded(node.id);
+      };
+    }
+
+    divContent.addEventListener('dragstart', (e) => {
+      e.stopPropagation();
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', node.id);
+      divContent.classList.add('dragging');
+    });
+
+    divContent.addEventListener('dragend', () => {
+      divContent.classList.remove('dragging');
+    });
+
+    divContent.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      e.dataTransfer.dropEffect = this.isExternalFileDrag(e) ? 'copy' : 'move';
+      const rect = divContent.getBoundingClientRect();
+      const isAfter = (e.clientY - rect.top) > rect.height / 2;
+      divContent.classList.toggle('drop-before', !isAfter);
+      divContent.classList.toggle('drop-after', isAfter);
+    });
+
+    divContent.addEventListener('dragleave', () => {
+      divContent.classList.remove('drop-before', 'drop-after');
+    });
+
+    divContent.addEventListener('drop', async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      divContent.classList.remove('drop-before', 'drop-after');
+
+      const rect = divContent.getBoundingClientRect();
+      const isAfter = (e.clientY - rect.top) > rect.height / 2;
+
+      if (this.isExternalFileDrag(e)) {
+        await this.handleTreeDrop(e.dataTransfer, node, !isAfter);
+        return;
+      }
+
+      const draggedId = e.dataTransfer.getData('text/plain');
+      if (!draggedId || draggedId === node.id) return;
+
+      const moved = this.treeManager.reorderNode(draggedId, node.id, !isAfter);
+      if (moved) {
+        if (this.isMatrixViewActive) this.renderMatrixGridInCanvas();
+      } else {
+        document.getElementById('statusMessage').textContent = 'Só é possível reordenar dentro do mesmo grupo de nós.';
+      }
+    });
+
     divNode.appendChild(divContent);
 
-    if (node.children && node.children.length > 0 && node.expanded) {
+    if (hasChildren && node.expanded) {
       const divChildren = document.createElement('div');
       divChildren.className = 'tree-children';
       node.children.forEach(child => {
@@ -711,7 +893,6 @@ class App {
 
     const refPx = parseInt(document.getElementById('matrixMaxWidthInput')?.value, 10) || 220;
     const selectedCount = this.selectedMatrixNodeIds.size;
-    const suggestionsCount = this.matrixSuggestionsMap.size;
 
     let gridHtml = `
       <div style="width:100%; height:100%; display:flex; flex-direction:column;">
@@ -740,18 +921,6 @@ class App {
               <i data-lucide="rotate-cw" style="width:14px; height:14px;"></i>
               <span>Rodar 90° ↻</span>
             </button>
-            <button class="btn btn-sm" onclick="window.app.autoOrientSelectedMatrixNodes()" style="background:var(--bg-hover); border:1px solid var(--accent-indigo);" title="Analisar Sugestões de Orientação">
-              <i data-lucide="wand-2" style="width:14px; height:14px; color:var(--accent-indigo);"></i>
-              <span>Analisar Orientação</span>
-            </button>
-            <span id="matrixSuggestionsBtnContainer">
-            ${suggestionsCount > 0 ? `
-              <button class="btn btn-sm" onclick="window.app.applyMatrixSuggestions()" style="background:#7c3aed; color:white; font-weight:600; box-shadow:0 0 10px rgba(124,58,237,0.5);" title="Aplicar Rotações Sugeridas às Imagens Selecionadas">
-                <i data-lucide="sparkles" style="width:14px; height:14px;"></i>
-                <span>Aplicar Sugestões (${suggestionsCount})</span>
-              </button>
-            ` : ''}
-            </span>
           </div>
         </div>
 
@@ -764,7 +933,6 @@ class App {
       const url = p.fileRef?.file ? this.getFileUrl(p.fileRef.file) : '';
       const rot = p.metadata?.rotation || 0;
       const isSelected = this.selectedMatrixNodeIds.has(p.id);
-      const sug = this.matrixSuggestionsMap.get(p.id);
 
       gridHtml += `
         <div class="matrix-card ${isSelected ? 'selected' : ''}" 
@@ -780,13 +948,6 @@ class App {
           </div>
           <div style="margin-top:0.5rem; font-size:0.8rem; font-weight:600; text-overflow:ellipsis; overflow:hidden; white-space:nowrap; color:var(--text-main);">
             <span>${p.label}</span> <span id="matrix-rot-badge-${p.id}" style="font-size:0.7rem; color:#c084fc;">${rot !== 0 ? `(🔄 ${rot}°)` : ''}</span>
-          </div>
-          <div id="matrix-sug-badge-${p.id}" style="min-height:22px;">
-            ${sug ? `
-              <div style="margin-top:0.3rem; font-size:0.7rem; color:#c084fc; background:rgba(124,58,237,0.2); border:1px solid #7c3aed; border-radius:10px; padding:0.15rem 0.4rem; display:inline-flex; align-items:center; gap:0.2rem; justify-content:center;">
-                <i data-lucide="sparkles" style="width:12px; height:12px;"></i> Sugestão: ${sug.suggestedRotation}°
-              </div>
-            ` : ''}
           </div>
           <div class="matrix-card-actions" onclick="event.stopPropagation();">
             <button class="matrix-btn-action" title="Rodar Imagem 90° para a Esquerda" onclick="window.app.rotateSingleMatrixNode('${p.id}', -90, event)">
@@ -823,21 +984,6 @@ class App {
     if (badge) {
       badge.textContent = `${this.selectedMatrixNodeIds.size} de ${totalCount} selecionadas`;
     }
-    const sugContainer = document.getElementById('matrixSuggestionsBtnContainer');
-    if (sugContainer) {
-      const suggestionsCount = this.matrixSuggestionsMap.size;
-      if (suggestionsCount > 0) {
-        sugContainer.innerHTML = `
-          <button class="btn btn-sm" onclick="window.app.applyMatrixSuggestions()" style="background:#7c3aed; color:white; font-weight:600; box-shadow:0 0 10px rgba(124,58,237,0.5);" title="Aplicar Rotações Sugeridas às Imagens Selecionadas">
-            <i data-lucide="sparkles" style="width:14px; height:14px;"></i>
-            <span>Aplicar Sugestões (${suggestionsCount})</span>
-          </button>
-        `;
-        if (window.lucide) window.lucide.createIcons();
-      } else {
-        sugContainer.innerHTML = '';
-      }
-    }
   }
 
   updateMatrixCardRotation(nodeId, newRotation) {
@@ -848,22 +994,6 @@ class App {
     const rotBadge = document.getElementById(`matrix-rot-badge-${nodeId}`);
     if (rotBadge) {
       rotBadge.textContent = newRotation !== 0 ? `(🔄 ${newRotation}°)` : '';
-    }
-  }
-
-  updateMatrixCardSuggestion(nodeId, suggestion) {
-    const container = document.getElementById(`matrix-sug-badge-${nodeId}`);
-    if (container) {
-      if (suggestion) {
-        container.innerHTML = `
-          <div style="margin-top:0.3rem; font-size:0.7rem; color:#c084fc; background:rgba(124,58,237,0.2); border:1px solid #7c3aed; border-radius:10px; padding:0.15rem 0.4rem; display:inline-flex; align-items:center; gap:0.2rem; justify-content:center;">
-            <i data-lucide="sparkles" style="width:12px; height:12px;"></i> Sugestão: ${suggestion.suggestedRotation}°
-          </div>
-        `;
-        if (window.lucide) window.lucide.createIcons();
-      } else {
-        container.innerHTML = '';
-      }
     }
   }
 
@@ -943,12 +1073,10 @@ class App {
       }
     });
     this.selectedMatrixNodeIds.clear();
-    this.matrixSuggestionsMap.clear();
     this.lastMatrixClickedIndex = null;
 
     const pageNodes = [];
     this.collectPagesRecursive(this.treeManager.root, pageNodes);
-    pageNodes.forEach(p => this.updateMatrixCardSuggestion(p.id, null));
     this.updateMatrixToolbarCounters(pageNodes.length);
   }
 
@@ -1039,90 +1167,7 @@ class App {
 
   updateViewerToolbarUI() {
     const indControls = document.getElementById('individualViewerControls');
-    const sugContainer = document.getElementById('orientationSuggestionContainer');
-
     if (indControls) indControls.style.display = 'flex';
-    if (this.isMatrixViewActive) {
-      if (sugContainer) sugContainer.style.display = 'none';
-    }
-  }
-
-  async autoOrientSelectedMatrixNodes() {
-    const pageNodes = [];
-    this.collectPagesRecursive(this.treeManager.root, pageNodes);
-
-    const targets = pageNodes.filter(p => this.selectedMatrixNodeIds.has(p.id));
-    const listToProcess = targets.length > 0 ? targets : pageNodes;
-
-    document.getElementById('statusMessage').textContent = `A analisar orientação de ${listToProcess.length} imagens na matriz...`;
-    
-    this.matrixSuggestionsMap.clear();
-
-    for (const p of listToProcess) {
-      if (!p.fileRef?.file) continue;
-      const res = await OrientationDetector.detect(p.fileRef.file);
-      const currentRot = p.metadata?.rotation || 0;
-
-      if (res.suggestedRotation !== currentRot && res.confidence >= 65) {
-        this.matrixSuggestionsMap.set(p.id, res);
-        this.selectedMatrixNodeIds.add(p.id);
-        this.updateMatrixCardSuggestion(p.id, res);
-        const card = document.getElementById(`matrix-card-${p.id}`);
-        if (card) {
-          card.classList.add('selected');
-          const chk = document.getElementById(`matrix-check-${p.id}`);
-          if (chk) chk.checked = true;
-        }
-      } else {
-        this.updateMatrixCardSuggestion(p.id, null);
-      }
-    }
-
-    this.updateMatrixToolbarCounters(pageNodes.length);
-
-    if (this.matrixSuggestionsMap.size > 0) {
-      document.getElementById('statusMessage').textContent = `Análise concluída: ${this.matrixSuggestionsMap.size} sugestões sinalizadas. Clique em "Aplicar Sugestões" para efetuar alterações.`;
-      alert(`💡 Sugestões de Orientação Encontradas!\n\nForam identificadas ${this.matrixSuggestionsMap.size} imagens com sugestões de rotação.\n\nAs miniaturas foram selecionadas e assinaladas com um badge na matriz.\n\nClique no botão "Aplicar Sugestões (${this.matrixSuggestionsMap.size})" na barra da Matriz se desejar efetuar a alteração.`);
-    } else {
-      document.getElementById('statusMessage').textContent = 'Todas as imagens analisadas parecem estar na orientação recomendada.';
-      alert('ℹ️ Nenhuma alteração sugerida:\n\nTodas as imagens selecionadas na matriz já se encontram na orientação recomendada.');
-    }
-  }
-
-  applyMatrixSuggestions() {
-    const targetIds = Array.from(this.selectedMatrixNodeIds);
-    let countApplied = 0;
-
-    targetIds.forEach(id => {
-      const sug = this.matrixSuggestionsMap.get(id);
-      if (sug) {
-        const node = this.treeManager.findNode(this.treeManager.root, id);
-        if (node) {
-          node.metadata = {
-            ...node.metadata,
-            rotation: sug.suggestedRotation
-          };
-          countApplied++;
-          this.matrixSuggestionsMap.delete(id);
-          this.updateMatrixCardRotation(id, sug.suggestedRotation);
-          this.updateMatrixCardSuggestion(id, null);
-          this.updateThumbnailRotation(id, sug.suggestedRotation);
-        }
-      }
-    });
-
-    const pageNodes = [];
-    this.collectPagesRecursive(this.treeManager.root, pageNodes);
-    this.updateMatrixToolbarCounters(pageNodes.length);
-    this.updateTreeRotations();
-    this.updateXmlPreview();
-
-    if (countApplied > 0) {
-      document.getElementById('statusMessage').textContent = `Sugestões aplicadas a ${countApplied} imagens com sucesso!`;
-      alert(`✨ Sucesso!\n\nForam aplicadas as rotações sugeridas a ${countApplied} imagens.`);
-    } else {
-      alert('Selecione os cartões que possuem a etiqueta de sugestão para aplicar a rotação.');
-    }
   }
 
   collectPagesRecursive(node, list) {
@@ -1144,6 +1189,7 @@ class App {
     document.getElementById('metaCreator').value = node.metadata?.creator || '';
     document.getElementById('metaDate').value = node.metadata?.date || '';
     document.getElementById('metaLanguage').value = node.metadata?.language || 'por';
+    document.getElementById('metaNotes').value = node.metadata?.notes || '';
     document.getElementById('metaRights').value = node.metadata?.rights || '';
 
     const rotation = node.metadata?.rotation || 0;
@@ -1186,6 +1232,7 @@ class App {
       creator: document.getElementById('metaCreator').value,
       date: document.getElementById('metaDate').value,
       language: document.getElementById('metaLanguage').value,
+      notes: document.getElementById('metaNotes').value,
       rights: document.getElementById('metaRights').value
     };
 
@@ -1213,19 +1260,6 @@ class App {
     canvas.innerHTML = `<img id="viewerImg" class="viewer-image" src="${url}" alt="${fileObj.name}">`;
     this.zoomLevel = 1.0;
     this.applyImageTransforms(rotationAngle);
-
-    // Ocultar sugestão anterior e acionar verificação em background
-    const sugContainer = document.getElementById('orientationSuggestionContainer');
-    if (sugContainer) sugContainer.style.display = 'none';
-
-    const img = document.getElementById('viewerImg');
-    if (img) {
-      if (img.complete) {
-        this.checkAndSuggestOrientation(fileObj, img);
-      } else {
-        img.onload = () => this.checkAndSuggestOrientation(fileObj, img);
-      }
-    }
   }
 
   applyImageTransforms(rotationDeg = null) {
@@ -1287,86 +1321,6 @@ class App {
     });
   }
 
-  async checkAndSuggestOrientation(fileObj, imgElement = null) {
-    const node = this.treeManager.getSelectedNode();
-    if (!node) return;
-
-    const res = await OrientationDetector.detect(fileObj.file, imgElement);
-    const currentRot = node.metadata?.rotation || 0;
-
-    if (res.suggestedRotation !== currentRot && res.confidence >= 65) {
-      this.lastOrientationSuggestion = res;
-      const container = document.getElementById('orientationSuggestionContainer');
-      const textSpan = document.getElementById('orientationSuggestionText');
-      if (container && textSpan) {
-        textSpan.textContent = `Sugestão: Rodar ${res.suggestedRotation}° (${res.message})`;
-        container.style.display = 'inline-flex';
-      }
-    }
-  }
-
-  async autoDetectCurrentNodeOrientation() {
-    const node = this.treeManager.getSelectedNode();
-    if (!node || !node.fileRef?.file) {
-      alert('Por favor selecione uma página com imagem no visualizador.');
-      return;
-    }
-
-    document.getElementById('statusMessage').textContent = 'A analisar orientação da imagem...';
-    const img = document.getElementById('viewerImg');
-    const res = await OrientationDetector.detect(node.fileRef.file, img);
-
-    const currentRot = node.metadata?.rotation || 0;
-    if (res.suggestedRotation === currentRot) {
-      document.getElementById('statusMessage').textContent = `Imagem já na orientação recomendada (${currentRot}°). [${res.method}]`;
-      alert(`ℹ️ Análise de Orientação:\n\nA imagem "${node.fileRef.name}" já se encontra na orientação recomendada (${currentRot}°).\n\n• Método: ${res.method}\n• Diagnóstico: ${res.message}\n• Confiança: ${res.confidence}%`);
-    } else {
-      this.lastOrientationSuggestion = res;
-      const container = document.getElementById('orientationSuggestionContainer');
-      const textSpan = document.getElementById('orientationSuggestionText');
-      if (container && textSpan) {
-        textSpan.textContent = `Sugestão: Rodar ${res.suggestedRotation}° (${res.message})`;
-        container.style.display = 'inline-flex';
-      }
-      document.getElementById('statusMessage').textContent = `Sugestão encontrada: Rodar ${res.suggestedRotation}° (${res.message})`;
-      alert(`💡 Sugestão de Orientação Encontrada!\n\nRecomendação: Rodar ${res.suggestedRotation}°.\n\n• Diagnóstico: ${res.message}\n• Confiança: ${res.confidence}%\n\nClique no botão "Aplicar" na barra do visualizador se desejar efetuar a alteração.`);
-    }
-  }
-
-  async autoDetectAllOrientations() {
-    const pageNodes = [];
-    this.collectPagesRecursive(this.treeManager.root, pageNodes);
-
-    if (pageNodes.length === 0) {
-      alert('Nenhuma página com ficheiro de imagem encontrada.');
-      return;
-    }
-
-    document.getElementById('statusMessage').textContent = `A analisar orientação de ${pageNodes.length} páginas...`;
-    let countAdjusted = 0;
-
-    for (const node of pageNodes) {
-      if (!node.fileRef?.file) continue;
-      const res = await OrientationDetector.detect(node.fileRef.file);
-
-      const currentRot = node.metadata?.rotation || 0;
-      if (res.suggestedRotation !== currentRot && res.confidence >= 70) {
-        node.metadata = {
-          ...node.metadata,
-          rotation: res.suggestedRotation
-        };
-        countAdjusted++;
-      }
-    }
-
-    if (countAdjusted > 0) {
-      this.treeManager.notify();
-      document.getElementById('statusMessage').textContent = `Orientação automática concluída: ${countAdjusted} páginas ajustadas.`;
-    } else {
-      document.getElementById('statusMessage').textContent = 'Análise em lote concluída: Todas as páginas parecem estar na orientação correta.';
-    }
-  }
-
   updateXmlPreview() {
     const preview = document.getElementById('xmlPreview');
     if (preview) {
@@ -1375,15 +1329,6 @@ class App {
     }
   }
 
-  downloadFile(filename, text, mimeType) {
-    const blob = new Blob([text], { type: mimeType });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    a.click();
-    URL.revokeObjectURL(url);
-  }
 }
 
 document.addEventListener('DOMContentLoaded', () => {
