@@ -62,7 +62,9 @@ export class EphemeraImporter {
         label: pageTitle,
         metadata: {
           ...mappedMeta,
-          rotation: 0
+          rotation: 0,
+          // Referência "natural" = ordem das linhas da folha de cálculo (não é alfabética por nome de ficheiro)
+          naturalOrderIndex: i
         },
         fileRef: imgObj,
         children: [],

@@ -25,9 +25,9 @@
         <span class="brand-badge">Ephemera Ready</span>
       </div>
       <div class="header-actions">
-        <button id="btnOpenObject" class="btn" style="background: linear-gradient(135deg, #7c3aed, var(--accent-indigo)); color: white;" title="Abrir Ficheiro XLSX/Numbers, Pasta ou ZIP">
-          <i data-lucide="package-open"></i>
-          <span>Abrir Objeto</span>
+        <button id="btnOpenObject" class="btn" style="background: linear-gradient(135deg, #7c3aed, var(--accent-indigo)); color: white;" title="Abrir uma Pasta (obra já gerada ou apenas imagens). Para .zip/.xlsx/.numbers, arraste o ficheiro para a árvore.">
+          <i data-lucide="folder-open"></i>
+          <span>Abrir Pasta</span>
         </button>
         <button id="btnSaveObject" class="btn btn-primary">
           <i data-lucide="save"></i>
@@ -40,7 +40,7 @@
     <main class="workspace-main">
       
       <!-- Panel 1: Tree Hierarchy -->
-      <section class="panel">
+      <section class="panel" id="treePanel">
         <div class="panel-header">
           <span><i data-lucide="folder-tree"></i> Estrutura Documental</span>
           <span id="nodeCountBadge" class="tree-node-badge">0 nós</span>
@@ -49,20 +49,11 @@
           <button id="btnAddChild" class="btn btn-icon" title="Adicionar Nó Filho">
             <i data-lucide="plus"></i>
           </button>
-          <button id="btnMoveUp" class="btn btn-icon" title="Mover para Cima">
-            <i data-lucide="arrow-up"></i>
-          </button>
-          <button id="btnMoveDown" class="btn btn-icon" title="Mover para Baixo">
-            <i data-lucide="arrow-down"></i>
-          </button>
           <button id="btnTreeRotateCCW" class="btn btn-icon" title="Rodar Imagem Selecionada 90° para a Esquerda">
             <i data-lucide="rotate-ccw"></i>
           </button>
           <button id="btnTreeRotateCW" class="btn btn-icon" title="Rodar Imagem Selecionada 90° para a Direita">
             <i data-lucide="rotate-cw"></i>
-          </button>
-          <button id="btnAutoDetectAll" class="btn btn-icon" title="Detetar Orientação de Todas as Imagens" style="color: var(--accent-indigo)">
-            <i data-lucide="wand-2"></i>
           </button>
           <button id="btnDeleteNode" class="btn btn-icon" title="Remover Nó" style="color: var(--accent-rose)">
             <i data-lucide="trash-2"></i>
@@ -75,6 +66,8 @@
         </div>
       </section>
 
+      <div id="treePanelResizer" class="panel-resizer" title="Arrastar para ajustar a largura"></div>
+
       <!-- Panel 2: Central Image / Document Viewer -->
       <section class="center-viewport">
         <div class="viewer-toolbar">
@@ -83,23 +76,10 @@
               Nenhum documento selecionado
             </span>
             <span id="rotationAngleBadge" class="tree-node-badge" style="background:#7c3aed; color:white;">Rotação: 0°</span>
-            <div id="orientationSuggestionContainer" style="display:none; align-items:center; gap:0.4rem;">
-              <span id="orientationSuggestionBadge" class="suggestion-badge">
-                <i data-lucide="sparkles" style="width:14px; height:14px;"></i>
-                <span id="orientationSuggestionText">Sugestão: Rodar 90°</span>
-              </span>
-              <button id="btnApplyOrientationSuggestion" class="btn btn-sm" style="background:#7c3aed; color:white; padding:0.2rem 0.5rem; font-size:0.75rem;">
-                Aplicar
-              </button>
-            </div>
           </div>
           <div style="display: flex; gap: 0.5rem; align-items: center;">
             <button id="btnToggleMatrixView" class="btn" title="Alternar Vista em Matriz"><i data-lucide="grid"></i><span>Matriz</span></button>
             <div id="individualViewerControls" style="display: flex; gap: 0.5rem; align-items: center;">
-              <button id="btnAutoDetect" class="btn" title="Analisar Orientação Recomendada para esta Imagem" style="background: var(--bg-hover); border: 1px solid var(--accent-indigo);">
-                <i data-lucide="wand-2" style="color: var(--accent-indigo);"></i>
-                <span>Analisar Orientação</span>
-              </button>
               <button id="btnZoomIn" class="btn btn-icon" title="Ampliar"><i data-lucide="zoom-in"></i></button>
               <button id="btnZoomOut" class="btn btn-icon" title="Reduzir"><i data-lucide="zoom-out"></i></button>
               <button id="btnRotateCCW" class="btn btn-icon" title="Rodar 90° Esquerda"><i data-lucide="rotate-ccw"></i></button>
@@ -268,6 +248,10 @@
               <input type="checkbox" id="genPdfCheck" style="width: 18px; height: 18px; accent-color: var(--accent-blue);">
               <span>Gerar PDF (documento único paginado)</span>
             </label>
+            <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer; font-size: 0.9rem; font-weight: 600; color: var(--text-main);">
+              <input type="checkbox" id="genXlsxCheck" style="width: 18px; height: 18px; accent-color: var(--accent-blue);">
+              <span>Gerar XLSX (tabela de metadados)</span>
+            </label>
           </div>
         </div>
         <div id="matrixOptionsGroup">
@@ -288,7 +272,7 @@
           <div style="display: flex; flex-direction: column; gap: 0.5rem;">
             <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer; font-size: 0.85rem;">
               <input type="radio" name="exportDestination" id="exportDestZip" value="zip" checked style="width: 16px; height: 16px; accent-color: var(--accent-blue);">
-              <span>Descarregar (.ZIP se for gerado HTML, ou o PDF diretamente)</span>
+              <span>Descarregar (.ZIP se necessário empacotar vários formatos/imagens, ou o ficheiro diretamente se for só um)</span>
             </label>
             <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer; font-size: 0.85rem;">
               <input type="radio" name="exportDestination" id="exportDestFolder" value="folder" style="width: 16px; height: 16px; accent-color: var(--accent-blue);">
@@ -304,46 +288,8 @@
     </div>
   </div>
 
-  <!-- Modal Abrir Objeto (ficheiro XLSX/Numbers/ZIP ou pasta de imagens/obra gerada) -->
-  <div id="modalOpenObject" class="modal-backdrop" style="display: none;">
-    <div class="modal">
-      <div class="modal-header">
-        <h3 style="font-size: 1rem; font-weight: 600;">Abrir Objeto</h3>
-        <button id="btnCloseOpenObjectModal" class="btn btn-icon"><i data-lucide="x"></i></button>
-      </div>
-      <div class="modal-body">
-        <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1rem;">
-          Selecione um ficheiro Ephemera (.xlsx / .numbers), um ZIP (obra previamente gerada ou apenas imagens), ou uma pasta (com imagens ou com uma obra já gerada). O conteúdo é detetado automaticamente.
-        </p>
-        <div style="display: flex; flex-direction: column; gap: 0.75rem;">
-          <button id="btnOpenObjectFile" class="btn btn-primary" style="justify-content: flex-start;">
-            <i data-lucide="file-archive"></i>
-            <span>Selecionar Ficheiro (.zip, .xlsx, .numbers)</span>
-          </button>
-          <button id="btnOpenObjectFolder" class="btn" style="justify-content: flex-start;">
-            <i data-lucide="folder-open"></i>
-            <span>Selecionar Pasta</span>
-          </button>
-        </div>
-      </div>
-      <div class="modal-footer">
-        <button id="btnCancelOpenObjectModal" class="btn">Cancelar</button>
-      </div>
-    </div>
-  </div>
-
   <!-- Hidden Inputs -->
-  <input type="file" id="openObjectFileInput" accept=".zip,.xlsx,.numbers" style="display: none;">
   <input type="file" id="openObjectFolderInput" webkitdirectory directory style="display: none;">
-
-  <!-- Visual Drag & Drop Overlay -->
-  <div id="dragDropOverlay" class="drag-drop-overlay" style="display: none;">
-    <div class="drag-drop-box">
-      <i data-lucide="upload-cloud" style="width: 56px; height: 56px; color: var(--accent-indigo);"></i>
-      <h3>Largar Ficheiros ou Pastas Aqui</h3>
-      <p>Imagens (.jpg, .png, .tif), Pastas Locais ou Tabelas (.xlsx, .numbers)</p>
-    </div>
-  </div>
 
   <!-- Application Logic -->
   <script type="module" src="src/app.js"></script>

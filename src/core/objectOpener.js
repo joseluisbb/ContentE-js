@@ -148,7 +148,7 @@ export class ObjectOpener {
         id: `${rootId}_${idx}`,
         type: 'PAGE',
         label: f.name.replace(/\.[^/.]+$/, ''),
-        metadata: { title: f.name.replace(/\.[^/.]+$/, ''), filename: f.name, mimeType: f.type, size: f.size },
+        metadata: { title: f.name.replace(/\.[^/.]+$/, ''), filename: f.name, mimeType: f.type, size: f.size, naturalOrderIndex: idx },
         fileRef: f,
         children: [],
         expanded: false

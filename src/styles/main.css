@@ -146,7 +146,7 @@ body {
 .workspace-main {
   flex: 1;
   display: grid;
-  grid-template-columns: 320px 1fr 360px;
+  grid-template-columns: var(--tree-panel-w, 320px) 6px 1fr 360px;
   overflow: hidden;
   height: calc(100vh - 56px - 28px);
 }
@@ -158,11 +158,22 @@ body {
   background-color: var(--bg-surface);
   border-right: 1px solid var(--border-color);
   overflow: hidden;
+  min-width: 0;
 }
 
 .panel-right {
   border-right: none;
   border-left: 1px solid var(--border-color);
+}
+
+.panel-resizer {
+  cursor: col-resize;
+  background-color: var(--border-color);
+}
+
+.panel-resizer:hover,
+.panel-resizer.active {
+  background-color: var(--accent-blue);
 }
 
 .panel-header {
@@ -229,6 +240,42 @@ body {
   border-color: rgba(59, 130, 246, 0.4);
   color: #60a5fa;
   font-weight: 500;
+}
+
+.tree-node-content.displaced {
+  background-color: rgba(245, 158, 11, 0.08);
+  border-color: rgba(245, 158, 11, 0.35);
+}
+
+.tree-node-content.displaced:hover {
+  background-color: rgba(245, 158, 11, 0.15);
+}
+
+.tree-node-content.displaced.selected {
+  background-color: rgba(245, 158, 11, 0.2);
+  border-color: rgba(245, 158, 11, 0.5);
+  color: #fbbf24;
+}
+
+.tree-node-content.dragging {
+  opacity: 0.4;
+}
+
+.tree-node-content.drop-before {
+  box-shadow: inset 0 2px 0 0 var(--accent-blue);
+}
+
+.tree-node-content.drop-after {
+  box-shadow: inset 0 -2px 0 0 var(--accent-blue);
+}
+
+.tree-node-thumb {
+  width: 24px;
+  height: 24px;
+  object-fit: cover;
+  border-radius: 4px;
+  flex-shrink: 0;
+  background-color: #000;
 }
 
 .tree-node-toggle {
@@ -299,6 +346,7 @@ body {
   background-color: #090d16;
   position: relative;
   overflow: hidden;
+  min-width: 0;
 }
 
 .viewer-toolbar {
@@ -550,65 +598,6 @@ body {
   justify-content: flex-end;
   gap: 0.5rem;
   background-color: rgba(15, 23, 42, 0.4);
-}
-
-/* Orientation Suggestion Badge */
-.suggestion-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.35rem;
-  font-size: 0.75rem;
-  font-weight: 500;
-  background: linear-gradient(135deg, rgba(124, 58, 237, 0.25), rgba(79, 70, 229, 0.25));
-  border: 1px solid var(--accent-indigo);
-  color: #c084fc;
-  padding: 0.2rem 0.6rem;
-  border-radius: 12px;
-  animation: pulseGlow 2s infinite alternate;
-}
-
-@keyframes pulseGlow {
-  0% { box-shadow: 0 0 4px rgba(124, 58, 237, 0.3); }
-  100% { box-shadow: 0 0 10px rgba(124, 58, 237, 0.7); }
-}
-
-/* Drag & Drop Visual Overlay */
-.drag-drop-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: rgba(15, 23, 42, 0.88);
-  backdrop-filter: blur(6px);
-  z-index: 9999;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  pointer-events: none;
-}
-
-.drag-drop-box {
-  border: 2px dashed var(--accent-indigo);
-  border-radius: 16px;
-  padding: 3.5rem 5rem;
-  text-align: center;
-  color: var(--text-main);
-  background: var(--bg-secondary);
-  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5);
-  animation: pulseGlow 2s infinite alternate;
-}
-
-.drag-drop-box h3 {
-  font-size: 1.25rem;
-  margin-top: 1rem;
-  margin-bottom: 0.5rem;
-  color: var(--accent-indigo);
-}
-
-.drag-drop-box p {
-  font-size: 0.85rem;
-  color: var(--text-muted);
 }
 
 /* Matrix Grid Toolbar & Selection Styles */

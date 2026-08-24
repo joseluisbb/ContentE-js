@@ -100,6 +100,13 @@ export class TreeManager {
     // Ordenar os filhos do nó pai de forma consistente
     parentNode.children.sort((a, b) => (a.label || a.metadata?.filename || '').localeCompare(b.label || b.metadata?.filename || '', undefined, { numeric: true, sensitivity: 'base' }));
 
+    // Esta ordem (alfabética por nome de ficheiro) passa a ser a referência "natural" do grupo
+    parentNode.children
+      .filter(c => c.fileRef)
+      .forEach((child, idx) => {
+        child.metadata = { ...child.metadata, naturalOrderIndex: idx };
+      });
+
     this.notify();
   }
 
@@ -123,28 +130,32 @@ export class TreeManager {
     return false;
   }
 
-  moveNodeUp(nodeId) {
-    const parent = this.findParentNode(this.root, nodeId);
-    if (!parent) return;
-    const idx = parent.children.findIndex(c => c.id === nodeId);
-    if (idx > 0) {
-      const temp = parent.children[idx];
-      parent.children[idx] = parent.children[idx - 1];
-      parent.children[idx - 1] = temp;
-      this.notify();
-    }
-  }
+  /**
+   * Reordena um nó arrastado para antes/depois de um nó alvo, dentro do mesmo grupo de irmãos
+   * (substitui os antigos botões "Mover para Cima/Baixo" por arrastar-e-largar na árvore)
+   */
+  reorderNode(draggedId, targetId, placeBefore) {
+    if (draggedId === targetId) return false;
 
-  moveNodeDown(nodeId) {
-    const parent = this.findParentNode(this.root, nodeId);
-    if (!parent) return;
-    const idx = parent.children.findIndex(c => c.id === nodeId);
-    if (idx >= 0 && idx < parent.children.length - 1) {
-      const temp = parent.children[idx];
-      parent.children[idx] = parent.children[idx + 1];
-      parent.children[idx + 1] = temp;
-      this.notify();
+    const draggedParent = this.findParentNode(this.root, draggedId);
+    const targetParent = this.findParentNode(this.root, targetId);
+    if (!draggedParent || !targetParent || draggedParent !== targetParent) return false;
+
+    const draggedIdx = draggedParent.children.findIndex(c => c.id === draggedId);
+    if (draggedIdx === -1) return false;
+
+    const [draggedNode] = draggedParent.children.splice(draggedIdx, 1);
+
+    const targetIdx = targetParent.children.findIndex(c => c.id === targetId);
+    if (targetIdx === -1) {
+      draggedParent.children.splice(draggedIdx, 0, draggedNode);
+      return false;
     }
+
+    const insertIdx = placeBefore ? targetIdx : targetIdx + 1;
+    targetParent.children.splice(insertIdx, 0, draggedNode);
+    this.notify();
+    return true;
   }
 
   updateNodeMetadata(nodeId, newMetadata) {
