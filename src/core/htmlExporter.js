@@ -1,23 +1,33 @@
 /**
- * ContentE Web — Standalone HTML Package Exporter
+ * ContentE Web — Exportador do Objeto (HTML navegável e/ou PDF paginado)
  * Gera o Objeto HTML com suporte a Página de Entrada em Matriz (Grelha de Miniaturas Opcional)
+ * e/ou um PDF único, guardando como .ZIP/ficheiro descarregado ou diretamente numa pasta local
  */
 
 import { MetsExporter } from './metsExporter.js';
+import { PdfExporter } from './pdfExporter.js';
 
 export class HtmlExporter {
   /**
-   * Exporta a árvore do ContentE como um pacote ZIP contendo index.html, imagens rodadas, METS.xml e Página de Entrada em Matriz
+   * Gera o(s) formato(s) pedidos (HTML e/ou PDF) a partir da árvore do ContentE
    */
-  static async exportHtmlPackage(treeRoot, options = {}) {
+  static async exportObject(treeRoot, options = {}) {
     if (!treeRoot) {
       alert('Não existe nenhum objeto documental para exportar.');
       return;
     }
 
+    const generateHtml = !!options.generateHtml;
+    const generatePdf = !!options.generatePdf;
+
+    if (!generateHtml && !generatePdf) {
+      alert('Selecione pelo menos uma opção: Gerar HTML ou Gerar PDF.');
+      return;
+    }
+
     const destination = options.destination === 'folder' ? 'folder' : 'zip';
 
-    if (destination === 'zip' && typeof window.JSZip === 'undefined') {
+    if (destination === 'zip' && generateHtml && typeof window.JSZip === 'undefined') {
       alert('JSZip não está disponível.');
       return;
     }
@@ -29,12 +39,14 @@ export class HtmlExporter {
 
     const cleanFolderName = treeRoot.label.replace(/[^a-z0-9_-]/gi, '_');
 
-    // 1. Gerar (e rodar fisicamente) os ficheiros de imagem
+    // 1. Gerar (e rodar fisicamente) os ficheiros de imagem — reaproveitados pelo HTML e pelo PDF
     const pageNodes = [];
     HtmlExporter.collectPageNodes(treeRoot, pageNodes);
 
     const imageMap = new Map();
     const imageFiles = new Map(); // 'images/xxx.ext' -> Blob
+    const orderedBlobs = [];
+    const orderedFicheNodes = []; // nós alinhados 1:1 com orderedBlobs, para as fichas de metadados do PDF
 
     for (let i = 0; i < pageNodes.length; i++) {
       const p = pageNodes[i];
@@ -55,45 +67,83 @@ export class HtmlExporter {
 
         imageFiles.set(`images/${cleanName}`, finalBlob);
         imageMap.set(p.id, `images/${cleanName}`);
+        orderedBlobs.push(finalBlob);
+        orderedFicheNodes.push(p);
       }
     }
 
-    // 2. Gerar METS XML
-    const metsXml = MetsExporter.exportMetsXml(treeRoot);
+    // 2. Preparar os ficheiros extra pedidos (atualmente apenas o PDF)
+    const extraFiles = new Map(); // nome do ficheiro na raiz do objeto -> Blob
 
-    // 3. Gerar index.html para Navegação em Browser com Matriz de Entrada
-    const htmlContent = HtmlExporter.generateStandaloneHtml(treeRoot, imageMap, matrixOpts);
-
-    if (destination === 'folder') {
-      return HtmlExporter.writeToLocalFolder(cleanFolderName, imageFiles, metsXml, htmlContent);
+    if (generatePdf) {
+      try {
+        const pdfBlob = await PdfExporter.buildPdfBlob(orderedFicheNodes, orderedBlobs, {
+          title: treeRoot.label,
+          includeMatrix: matrixOpts.enabled,
+          matrixMaxPx: matrixOpts.maxWidthPx
+        });
+        extraFiles.set(`${cleanFolderName}.pdf`, pdfBlob);
+      } catch (err) {
+        alert(`Falha ao gerar o PDF: ${err.message}`);
+        return null;
+      }
     }
 
-    return HtmlExporter.downloadAsZip(cleanFolderName, imageFiles, metsXml, htmlContent);
+    // 3. Preparar o pacote HTML (METS.xml + index.html + imagens), se pedido
+    let htmlPayload = null;
+    if (generateHtml) {
+      htmlPayload = {
+        imageFiles,
+        metsXml: MetsExporter.exportMetsXml(treeRoot),
+        htmlContent: HtmlExporter.generateStandaloneHtml(treeRoot, imageMap, matrixOpts)
+      };
+    }
+
+    if (destination === 'folder') {
+      return HtmlExporter.writeToLocalFolder(cleanFolderName, htmlPayload, extraFiles);
+    }
+
+    // Apenas PDF: descarregar diretamente o ficheiro, sem o empacotar num .ZIP
+    if (!generateHtml && generatePdf) {
+      HtmlExporter.triggerDownload(extraFiles.get(`${cleanFolderName}.pdf`), `${cleanFolderName}.pdf`);
+      return { destination: 'zip', folderName: cleanFolderName };
+    }
+
+    return HtmlExporter.downloadAsZip(cleanFolderName, htmlPayload, extraFiles);
+  }
+
+  static triggerDownload(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
   }
 
   /**
    * Empacota o objeto num ficheiro .ZIP e inicia o descarregamento
    */
-  static async downloadAsZip(cleanFolderName, imageFiles, metsXml, htmlContent) {
+  static async downloadAsZip(cleanFolderName, htmlPayload, extraFiles) {
     const zip = new window.JSZip();
     const objectFolder = zip.folder(cleanFolderName);
-    const imgFolder = objectFolder.folder('images');
 
-    imageFiles.forEach((blob, relPath) => {
-      const name = relPath.replace(/^images\//, '');
-      imgFolder.file(name, blob);
+    if (htmlPayload) {
+      const imgFolder = objectFolder.folder('images');
+      htmlPayload.imageFiles.forEach((blob, relPath) => {
+        const name = relPath.replace(/^images\//, '');
+        imgFolder.file(name, blob);
+      });
+      objectFolder.file('METS.xml', htmlPayload.metsXml);
+      objectFolder.file('index.html', htmlPayload.htmlContent);
+    }
+
+    extraFiles.forEach((blob, name) => {
+      objectFolder.file(name, blob);
     });
 
-    objectFolder.file('METS.xml', metsXml);
-    objectFolder.file('index.html', htmlContent);
-
     const zipBlob = await zip.generateAsync({ type: 'blob' });
-    const url = URL.createObjectURL(zipBlob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${cleanFolderName}_ObjetoHTML.zip`;
-    a.click();
-    URL.revokeObjectURL(url);
+    HtmlExporter.triggerDownload(zipBlob, `${cleanFolderName}_ObjetoHTML.zip`);
 
     return { destination: 'zip', folderName: cleanFolderName };
   }
@@ -101,9 +151,9 @@ export class HtmlExporter {
   /**
    * Escreve o objeto diretamente numa pasta local escolhida pelo utilizador (File System Access API)
    */
-  static async writeToLocalFolder(cleanFolderName, imageFiles, metsXml, htmlContent) {
+  static async writeToLocalFolder(cleanFolderName, htmlPayload, extraFiles) {
     if (!('showDirectoryPicker' in window) || window.location.protocol === 'file:') {
-      alert('O seu navegador não suporta guardar diretamente numa pasta local. Utilize a opção de descarregar como .ZIP.');
+      alert('O seu navegador não suporta guardar diretamente numa pasta local. Utilize a opção de descarregar.');
       return null;
     }
 
@@ -127,25 +177,34 @@ export class HtmlExporter {
       objectDirHandle = await parentHandle.getDirectoryHandle(cleanFolderName, { create: true });
     }
 
-    const imagesDirHandle = await objectDirHandle.getDirectoryHandle('images', { create: true });
+    if (htmlPayload) {
+      const imagesDirHandle = await objectDirHandle.getDirectoryHandle('images', { create: true });
 
-    for (const [relPath, blob] of imageFiles) {
-      const name = relPath.replace(/^images\//, '');
-      const fileHandle = await imagesDirHandle.getFileHandle(name, { create: true });
+      for (const [relPath, blob] of htmlPayload.imageFiles) {
+        const name = relPath.replace(/^images\//, '');
+        const fileHandle = await imagesDirHandle.getFileHandle(name, { create: true });
+        const writable = await fileHandle.createWritable();
+        await writable.write(blob);
+        await writable.close();
+      }
+
+      const metsHandle = await objectDirHandle.getFileHandle('METS.xml', { create: true });
+      const metsWritable = await metsHandle.createWritable();
+      await metsWritable.write(htmlPayload.metsXml);
+      await metsWritable.close();
+
+      const indexHandle = await objectDirHandle.getFileHandle('index.html', { create: true });
+      const indexWritable = await indexHandle.createWritable();
+      await indexWritable.write(htmlPayload.htmlContent);
+      await indexWritable.close();
+    }
+
+    for (const [name, blob] of extraFiles) {
+      const fileHandle = await objectDirHandle.getFileHandle(name, { create: true });
       const writable = await fileHandle.createWritable();
       await writable.write(blob);
       await writable.close();
     }
-
-    const metsHandle = await objectDirHandle.getFileHandle('METS.xml', { create: true });
-    const metsWritable = await metsHandle.createWritable();
-    await metsWritable.write(metsXml);
-    await metsWritable.close();
-
-    const indexHandle = await objectDirHandle.getFileHandle('index.html', { create: true });
-    const indexWritable = await indexHandle.createWritable();
-    await indexWritable.write(htmlContent);
-    await indexWritable.close();
 
     return { destination: 'folder', folderName: cleanFolderName, dirName: parentHandle.name };
   }
@@ -234,11 +293,7 @@ export class HtmlExporter {
     .tree-item:hover { background: rgba(255,255,255,0.05); }
     .tree-item.active { background: rgba(59,130,246,0.2); color: #60a5fa; font-weight: 600; }
     .viewport { background: #090d16; display: flex; align-items: center; justify-content: center; position: relative; padding: 1rem; overflow: auto; }
-    .viewport img { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 6px; box-shadow: 0 10px 25px rgba(0,0,0,0.5); }
-    .meta-row { margin-bottom: 0.8rem; }
-    .meta-label { font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase; font-weight: 600; margin-bottom: 0.2rem; }
-    .meta-val { font-size: 0.9rem; word-break: break-word; }
-
+    .viewport img { max-width: 100%; max-height: 65vh; object-fit: contain; border-radius: 6px; box-shadow: 0 10px 25px rgba(0,0,0,0.5); }
     /* Estilos da Matriz / Grelha de Entrada */
     .matrix-view { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: var(--bg-main); z-index: 20; padding: 1.5rem; overflow-y: auto; }
     .matrix-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(${matrixOpts.maxWidthPx}px, 1fr)); gap: 1.25rem; justify-items: stretch; }
@@ -248,7 +303,15 @@ export class HtmlExporter {
     .matrix-img-box img { max-width: 100%; max-height: 100%; object-fit: contain; }
     .matrix-info { padding: 0.75rem; font-size: 0.82rem; }
     .matrix-title { font-weight: 600; color: var(--text); margin-bottom: 0.25rem; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
-    .matrix-sub { font-size: 0.75rem; color: var(--text-muted); }
+
+    /* Ficha compacta de metadados, mostrada sob cada imagem */
+    .meta-fiche { display: flex; flex-direction: column; gap: 0.15rem; }
+    .meta-fiche-row { font-size: 0.7rem; line-height: 1.35; color: var(--text-muted); word-break: break-word; }
+    .meta-fiche-label { color: var(--text); font-weight: 600; }
+    .matrix-info .meta-fiche { margin-top: 0.4rem; padding-top: 0.4rem; border-top: 1px solid var(--border); }
+
+    .viewport-fiche-wrap { max-width: 900px; width: 100%; margin: 0 auto; background: var(--bg-side); border: 1px solid var(--border); border-radius: 8px; padding: 0.85rem 1rem; flex-shrink: 0; }
+    .viewport-fiche-wrap .meta-fiche-row { font-size: 0.8rem; }
   </style>
 </head>
 <body>
@@ -277,7 +340,7 @@ export class HtmlExporter {
     </section>
 
     <section class="viewport">
-      <div id="imageContainer" style="width: 100%; height: 100%; display: flex; align-items: center; justify-content: center;">
+      <div id="imageContainer" style="width: 100%; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.85rem;">
         <p style="color: var(--text-muted);">Selecione uma imagem na árvore para visualizar</p>
       </div>
     </section>
@@ -308,6 +371,42 @@ export class HtmlExporter {
       if (node.children) node.children.forEach(c => collectPages(c, list));
     }
 
+    const LANGUAGE_NAMES = { por: 'Português', eng: 'Inglês', spa: 'Espanhol', lat: 'Latim' };
+
+    function escapeHtml(str) {
+      return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+
+    // Ficha compacta: lista todos os metadados preenchidos de um nó
+    function getFicheEntries(node) {
+      const m = node.metadata || {};
+      const entries = [];
+      const push = (label, value) => {
+        if (value === undefined || value === null) return;
+        const str = String(value).trim();
+        if (str !== '') entries.push({ label, value: str });
+      };
+      push('Título', m.title || node.label);
+      push('Identificador', m.identifier);
+      push('Autor / Origem', m.creator);
+      push('Data', m.date);
+      push('Língua', LANGUAGE_NAMES[m.language] || m.language);
+      push('Assunto', m.subject);
+      push('Cobertura', m.coverage);
+      push('Notas', m.notes);
+      push('Direitos', m.rights);
+      return entries;
+    }
+
+    function renderFicheHtml(node, skipTitle) {
+      let entries = getFicheEntries(node);
+      if (skipTitle) entries = entries.filter(e => e.label !== 'Título');
+      if (entries.length === 0) return '';
+      return '<div class="meta-fiche">' + entries.map(e =>
+        '<div class="meta-fiche-row"><span class="meta-fiche-label">' + escapeHtml(e.label) + ':</span> ' + escapeHtml(e.value) + '</div>'
+      ).join('') + '</div>';
+    }
+
     function buildMatrix() {
       const grid = document.getElementById('matrixGrid');
       if (!grid) return;
@@ -326,7 +425,6 @@ export class HtmlExporter {
         };
 
         const titleText = p.label || p.metadata?.title || 'Página';
-        const subText = p.metadata?.creator || p.metadata?.date || '';
 
         card.innerHTML = \`
           <div class="matrix-img-box">
@@ -334,7 +432,7 @@ export class HtmlExporter {
           </div>
           <div class="matrix-info">
             <div class="matrix-title">\${titleText}</div>
-            <div class="matrix-sub">\${subText}</div>
+            \${renderFicheHtml(p, true)}
           </div>
         \`;
         grid.appendChild(card);
@@ -378,20 +476,14 @@ export class HtmlExporter {
       const container = document.getElementById('imageContainer');
       const imgPath = imgMap[node.id];
       if (imgPath) {
-        container.innerHTML = '<img src="' + imgPath + '" alt="' + (node.label || '') + '">';
+        container.innerHTML = '<img src="' + imgPath + '" alt="' + (node.label || '') + '">'
+          + '<div class="viewport-fiche-wrap">' + renderFicheHtml(node) + '</div>';
       } else {
         container.innerHTML = '<p style="color: var(--text-muted);">Estrutura: ' + (node.label || node.type) + '</p>';
       }
 
       const metaView = document.getElementById('metaView');
-      const m = node.metadata || {};
-      metaView.innerHTML = \`
-        <div class="meta-row"><div class="meta-label">Título / Rótulo</div><div class="meta-val">\${m.title || node.label || '-'}</div></div>
-        <div class="meta-row"><div class="meta-label">Autor / Criador</div><div class="meta-val">\${m.creator || '-'}</div></div>
-        <div class="meta-row"><div class="meta-label">Data</div><div class="meta-val">\${m.date || '-'}</div></div>
-        <div class="meta-row"><div class="meta-label">Assunto / Cobertura</div><div class="meta-val">\${m.subject || m.coverage || '-'}</div></div>
-        <div class="meta-row"><div class="meta-label">Notas / Direitos</div><div class="meta-val">\${m.rights || '-'}</div></div>
-      \`;
+      metaView.innerHTML = renderFicheHtml(node) || '<p style="color: var(--text-muted); font-size: 0.85rem;">Sem metadados preenchidos.</p>';
     }
 
     init();

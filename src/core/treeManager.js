@@ -25,6 +25,7 @@ export class TreeManager {
         creator: '',
         date: new Date().getFullYear().toString(),
         language: 'por',
+        notes: '',
         rights: 'Domínio Público / Protegido',
         description: ''
       },

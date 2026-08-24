@@ -9,7 +9,7 @@ import { TreeManager } from './core/treeManager.js';
 import { MetsExporter } from './core/metsExporter.js';
 import { EphemeraImporter } from './core/ephemeraImporter.js';
 import { HtmlExporter } from './core/htmlExporter.js';
-import { HtmlImporter } from './core/htmlImporter.js';
+import { ObjectOpener } from './core/objectOpener.js';
 import { OrientationDetector } from './core/orientationDetector.js';
 
 class App {
@@ -75,81 +75,6 @@ class App {
       this.renderThumbnails();
     });
 
-    // Botão Pasta Local
-    document.getElementById('btnOpenFolder')?.addEventListener('click', async () => {
-      if ('showDirectoryPicker' in window && window.location.protocol !== 'file:') {
-        try {
-          const handle = await window.showDirectoryPicker({ mode: 'read' });
-          this.fileSystem.directoryHandle = handle;
-          this.fileSystem.fileEntries.clear();
-          await this.fileSystem.scanDirectory(handle);
-          document.getElementById('statusFolder').textContent = `Pasta: ${handle.name} (${this.fileSystem.fileEntries.size} ficheiros)`;
-          this.processImportedFiles();
-          return;
-        } catch (err) {
-          if (err.name === 'AbortError') return;
-          console.warn('showDirectoryPicker falhou, a usar input fallback:', err);
-        }
-      }
-      document.getElementById('folderInputFallback')?.click();
-    });
-
-    // Botão Ficheiros de Imagem
-    document.getElementById('btnOpenFiles')?.addEventListener('click', () => {
-      document.getElementById('imageFilesInput')?.click();
-    });
-
-    // Evento de Seleção de Imagens
-    document.getElementById('imageFilesInput')?.addEventListener('change', (e) => {
-      if (e.target.files && e.target.files.length > 0) {
-        const fileList = Array.from(e.target.files).map(file => ({
-          name: file.name,
-          relPath: file.name,
-          file: file,
-          size: file.size,
-          type: file.type || this.fileSystem.inferMimeType(file.name)
-        }));
-
-        const imageFiles = fileList.filter(f => f.type.startsWith('image/'));
-        if (imageFiles.length > 0) {
-          this.treeManager.addFilesAsPages(this.treeManager.root.id, imageFiles);
-          document.getElementById('statusMessage').textContent = `${imageFiles.length} imagens importadas com sucesso!`;
-          document.getElementById('statusFolder').textContent = `${imageFiles.length} imagens selecionadas`;
-          this.renderThumbnails(imageFiles);
-
-          const pageNodes = this.treeManager.root.children.filter(c => c.fileRef);
-          if (pageNodes.length > 0) {
-            this.treeManager.selectNode(pageNodes[0].id);
-          }
-        } else {
-          alert('Nenhum ficheiro de imagem válido selecionado.');
-        }
-      }
-    });
-
-    // Botão Importar XLSX / Numbers
-    document.getElementById('btnImportEphemera')?.addEventListener('click', () => {
-      document.getElementById('ephemeraFileInput')?.click();
-    });
-
-    document.getElementById('ephemeraFileInput')?.addEventListener('change', async (e) => {
-      const file = e.target.files[0];
-      if (file) {
-        await this.handleEphemeraImport(file);
-      }
-    });
-
-    // Fallback de Seleção de Pasta
-    document.getElementById('folderInputFallback')?.addEventListener('change', (e) => {
-      if (e.target.files && e.target.files.length > 0) {
-        const res = this.fileSystem.handleFileInputList(e.target.files);
-        if (res.success) {
-          document.getElementById('statusFolder').textContent = `Pasta carregada (${res.count} ficheiros)`;
-          this.processImportedFiles();
-        }
-      }
-    });
-
     // Eventos de Drag & Drop (Arrastar e Largar)
     const overlay = document.getElementById('dragDropOverlay');
 
@@ -181,28 +106,43 @@ class App {
       }
     });
 
-    // Abrir Modal de Opções de Exportação de Objeto HTML
-    document.getElementById('btnExportHtmlPackage')?.addEventListener('click', () => {
-      const modal = document.getElementById('modalExportConfig');
+    // Abrir Modal de Opções de Gravação (HTML e/ou PDF)
+    document.getElementById('btnSaveObject')?.addEventListener('click', () => {
+      const modal = document.getElementById('modalSaveOptions');
       if (modal) modal.style.display = 'flex';
     });
 
-    document.getElementById('btnCloseExportModal')?.addEventListener('click', () => this.closeExportModal());
-    document.getElementById('btnCancelExportModal')?.addEventListener('click', () => this.closeExportModal());
+    document.getElementById('btnCloseSaveModal')?.addEventListener('click', () => this.closeSaveModal());
+    document.getElementById('btnCancelSaveModal')?.addEventListener('click', () => this.closeSaveModal());
 
-    // Confirmar Geração do HTML com Definições da Matriz (Largura de Referência em Pixéis, colunas automáticas) e Destino
-    document.getElementById('btnConfirmExportHtml')?.addEventListener('click', async () => {
+    // As opções da Matriz aplicam-se ao HTML e/ou ao PDF — só se ocultam se nenhum dos dois estiver selecionado
+    document.getElementById('genHtmlCheck')?.addEventListener('change', () => this.updateMatrixOptionsVisibility());
+    document.getElementById('genPdfCheck')?.addEventListener('change', () => this.updateMatrixOptionsVisibility());
+
+    // Confirmar Gravação: gerar HTML e/ou PDF (Matriz e Destino aplicam-se conforme a seleção)
+    document.getElementById('btnConfirmSave')?.addEventListener('click', async () => {
+      const generateHtml = document.getElementById('genHtmlCheck').checked;
+      const generatePdf = document.getElementById('genPdfCheck').checked;
+
+      if (!generateHtml && !generatePdf) {
+        alert('Selecione pelo menos uma opção: Gerar HTML ou Gerar PDF.');
+        return;
+      }
+
       const enabled = document.getElementById('matrixEnableCheck').checked;
       const maxPx = parseInt(document.getElementById('matrixMaxWidthInput').value, 10) || 220;
       const destination = document.querySelector('input[name="exportDestination"]:checked')?.value || 'zip';
 
-      this.closeExportModal();
+      this.closeSaveModal();
+      const formatLabel = generateHtml && generatePdf ? 'HTML e PDF' : (generateHtml ? 'HTML' : 'PDF');
       document.getElementById('statusMessage').textContent = destination === 'folder'
-        ? 'A guardar HTML na pasta local escolhida...'
-        : 'A gerar HTML com Matriz de Entrada...';
+        ? `A guardar ${formatLabel} na pasta local escolhida...`
+        : `A gerar ${formatLabel}...`;
 
       try {
-        const result = await HtmlExporter.exportHtmlPackage(this.treeManager.root, {
+        const result = await HtmlExporter.exportObject(this.treeManager.root, {
+          generateHtml,
+          generatePdf,
           matrixEnabled: enabled,
           matrixMaxPx: maxPx,
           destination
@@ -214,16 +154,16 @@ class App {
         }
 
         document.getElementById('statusMessage').textContent = destination === 'folder'
-          ? 'HTML guardado com sucesso na pasta local escolhida!'
-          : 'HTML descarregado com sucesso!';
+          ? `${formatLabel} guardado com sucesso na pasta local escolhida!`
+          : `${formatLabel} gerado com sucesso!`;
       } catch (err) {
-        console.error('Erro ao gerar HTML:', err);
-        alert(`Falha ao gerar o HTML: ${err.message}`);
-        document.getElementById('statusMessage').textContent = 'Erro ao gerar HTML.';
+        console.error('Erro ao gravar objeto:', err);
+        alert(`Falha ao gravar: ${err.message}`);
+        document.getElementById('statusMessage').textContent = 'Erro ao gravar.';
       }
     });
 
-    // Abrir Modal "Abrir Objeto Já Criado"
+    // Abrir Modal "Abrir Objeto"
     document.getElementById('btnOpenObject')?.addEventListener('click', () => {
       const modal = document.getElementById('modalOpenObject');
       if (modal) modal.style.display = 'flex';
@@ -232,15 +172,15 @@ class App {
     document.getElementById('btnCloseOpenObjectModal')?.addEventListener('click', () => this.closeOpenObjectModal());
     document.getElementById('btnCancelOpenObjectModal')?.addEventListener('click', () => this.closeOpenObjectModal());
 
-    document.getElementById('btnOpenObjectZip')?.addEventListener('click', () => {
+    document.getElementById('btnOpenObjectFile')?.addEventListener('click', () => {
       this.closeOpenObjectModal();
-      document.getElementById('openObjectZipInput')?.click();
+      document.getElementById('openObjectFileInput')?.click();
     });
 
-    document.getElementById('openObjectZipInput')?.addEventListener('change', async (e) => {
+    document.getElementById('openObjectFileInput')?.addEventListener('change', async (e) => {
       const file = e.target.files[0];
       e.target.value = '';
-      if (file) await this.handleOpenObjectZip(file);
+      if (file) await this.handleOpenObjectFile(file);
     });
 
     document.getElementById('btnOpenObjectFolder')?.addEventListener('click', async () => {
@@ -318,7 +258,7 @@ class App {
       }
     });
 
-    const metaInputs = ['metaTitle', 'metaCreator', 'metaDate', 'metaLanguage', 'metaRights', 'nodeTypeSelect'];
+    const metaInputs = ['metaTitle', 'metaCreator', 'metaDate', 'metaLanguage', 'metaNotes', 'metaRights', 'nodeTypeSelect'];
     metaInputs.forEach(id => {
       document.getElementById(id)?.addEventListener('input', () => this.saveMetadataFromForm());
       document.getElementById(id)?.addEventListener('change', () => this.saveMetadataFromForm());
@@ -337,11 +277,6 @@ class App {
           this.updateXmlPreview();
         }
       });
-    });
-
-    document.getElementById('btnExportMets')?.addEventListener('click', () => {
-      const xmlString = MetsExporter.exportMetsXml(this.treeManager.root);
-      this.downloadFile('METS.xml', xmlString, 'text/xml');
     });
 
     document.getElementById('btnZoomIn')?.addEventListener('click', () => {
@@ -449,9 +384,17 @@ class App {
     if (modal) modal.style.display = 'none';
   }
 
-  closeExportModal() {
-    const modal = document.getElementById('modalExportConfig');
+  closeSaveModal() {
+    const modal = document.getElementById('modalSaveOptions');
     if (modal) modal.style.display = 'none';
+  }
+
+  updateMatrixOptionsVisibility() {
+    const group = document.getElementById('matrixOptionsGroup');
+    if (!group) return;
+    const htmlEnabled = document.getElementById('genHtmlCheck')?.checked;
+    const pdfEnabled = document.getElementById('genPdfCheck')?.checked;
+    group.style.display = (htmlEnabled || pdfEnabled) ? 'block' : 'none';
   }
 
   closeOpenObjectModal() {
@@ -466,13 +409,17 @@ class App {
     return confirm('Já existe um objeto aberto com conteúdo. Abrir um novo objeto irá substituir o trabalho atual não guardado. Deseja continuar?');
   }
 
-  loadImportedRoot(root) {
-    this.treeManager.loadTree(root);
+  resetViewStateForNewObject() {
     this.fileUrlCache = new WeakMap();
     this.selectedMatrixNodeIds.clear();
     this.matrixSuggestionsMap.clear();
     this.isMatrixViewActive = false;
     this.updateViewerToolbarUI();
+  }
+
+  loadImportedRoot(root) {
+    this.treeManager.loadTree(root);
+    this.resetViewStateForNewObject();
 
     const pageNodes = [];
     this.collectPagesRecursive(root, pageNodes);
@@ -482,66 +429,76 @@ class App {
     }
   }
 
-  async handleOpenObjectZip(file) {
-    if (!this.confirmReplaceCurrentObject()) return;
-    document.getElementById('statusMessage').textContent = `A abrir objeto a partir de "${file.name}"...`;
-    try {
-      const root = await HtmlImporter.loadFromZipFile(file);
-      this.loadImportedRoot(root);
-      document.getElementById('statusMessage').textContent = `Objeto "${root.label}" aberto com sucesso a partir do ZIP.`;
-      document.getElementById('statusFolder').textContent = `Objeto: ${file.name}`;
-    } catch (err) {
-      console.error('Erro ao abrir objeto ZIP:', err);
-      alert(`Falha ao abrir o objeto: ${err.message}`);
-      document.getElementById('statusMessage').textContent = 'Erro ao abrir objeto.';
+  /**
+   * Ponto de entrada único do botão "Abrir Objeto" para ficheiros:
+   * deteta automaticamente se é um ficheiro Ephemera (.xlsx/.numbers) ou um .zip
+   * (obra previamente gerada ou apenas imagens)
+   */
+  async handleOpenObjectFile(file) {
+    const lower = file.name.toLowerCase();
+
+    if (lower.endsWith('.xlsx') || lower.endsWith('.numbers')) {
+      if (!this.confirmReplaceCurrentObject()) return;
+      document.getElementById('statusMessage').textContent = `A abrir ficheiro Ephemera "${file.name}" (.xlsx/.numbers)...`;
+      await this.handleEphemeraImport(file);
+      this.resetViewStateForNewObject();
+      return;
     }
+
+    if (lower.endsWith('.zip')) {
+      if (!this.confirmReplaceCurrentObject()) return;
+      document.getElementById('statusMessage').textContent = `A analisar conteúdo do ZIP "${file.name}"...`;
+      try {
+        const result = await ObjectOpener.openZipFile(file);
+        this.loadImportedRoot(result.root);
+        document.getElementById('statusMessage').textContent = ObjectOpener.describeResult(result, `ZIP "${file.name}"`);
+        document.getElementById('statusFolder').textContent = `Ficheiro: ${file.name}`;
+      } catch (err) {
+        console.error('Erro ao abrir ZIP:', err);
+        alert(`Falha ao abrir o ficheiro: ${err.message}`);
+        document.getElementById('statusMessage').textContent = 'Erro ao abrir objeto.';
+      }
+      return;
+    }
+
+    alert('Formato não suportado. Selecione um ficheiro .zip, .xlsx ou .numbers.');
   }
 
+  /**
+   * Ponto de entrada único do botão "Abrir Objeto" para pastas (File System Access API):
+   * deteta automaticamente se a pasta contém uma obra previamente gerada ou apenas imagens
+   */
   async handleOpenObjectDirectoryHandle(handle) {
     if (!this.confirmReplaceCurrentObject()) return;
-    document.getElementById('statusMessage').textContent = `A abrir objeto a partir da pasta "${handle.name}"...`;
+    document.getElementById('statusMessage').textContent = `A analisar pasta "${handle.name}"...`;
     try {
-      const root = await HtmlImporter.loadFromDirectoryHandle(handle);
-      this.loadImportedRoot(root);
-      document.getElementById('statusMessage').textContent = `Objeto "${root.label}" aberto com sucesso a partir da pasta.`;
-      document.getElementById('statusFolder').textContent = `Objeto: ${handle.name}`;
+      const result = await ObjectOpener.openDirectoryHandle(handle);
+      this.loadImportedRoot(result.root);
+      document.getElementById('statusMessage').textContent = ObjectOpener.describeResult(result, `pasta "${handle.name}"`);
+      document.getElementById('statusFolder').textContent = `Pasta: ${handle.name}`;
     } catch (err) {
-      console.error('Erro ao abrir objeto da pasta:', err);
-      alert(`Falha ao abrir o objeto: ${err.message}`);
+      console.error('Erro ao abrir pasta:', err);
+      alert(`Falha ao abrir a pasta: ${err.message}`);
       document.getElementById('statusMessage').textContent = 'Erro ao abrir objeto.';
     }
   }
 
+  /**
+   * Fallback do botão "Abrir Objeto" para pastas em navegadores sem File System Access API
+   */
   async handleOpenObjectFileList(fileList) {
     if (!this.confirmReplaceCurrentObject()) return;
-    document.getElementById('statusMessage').textContent = 'A abrir objeto a partir da pasta selecionada...';
+    const folderLabel = fileList[0]?.webkitRelativePath?.split('/')[0] || 'Pasta Selecionada';
+    document.getElementById('statusMessage').textContent = `A analisar pasta "${folderLabel}"...`;
     try {
-      const root = await HtmlImporter.loadFromFileInputList(fileList);
-      this.loadImportedRoot(root);
-      document.getElementById('statusMessage').textContent = `Objeto "${root.label}" aberto com sucesso.`;
-      document.getElementById('statusFolder').textContent = 'Objeto aberto a partir de pasta local';
+      const result = await ObjectOpener.openFolderFileList(fileList, folderLabel);
+      this.loadImportedRoot(result.root);
+      document.getElementById('statusMessage').textContent = ObjectOpener.describeResult(result, `pasta "${folderLabel}"`);
+      document.getElementById('statusFolder').textContent = `Pasta: ${folderLabel}`;
     } catch (err) {
-      console.error('Erro ao abrir objeto:', err);
-      alert(`Falha ao abrir o objeto: ${err.message}`);
+      console.error('Erro ao abrir pasta:', err);
+      alert(`Falha ao abrir a pasta: ${err.message}`);
       document.getElementById('statusMessage').textContent = 'Erro ao abrir objeto.';
-    }
-  }
-
-  processImportedFiles() {
-    const files = this.fileSystem.getFileList();
-    const imageFiles = files.filter(f => f.type.startsWith('image/'));
-
-    if (imageFiles.length > 0) {
-      this.treeManager.addFilesAsPages(this.treeManager.root.id, imageFiles);
-      document.getElementById('statusMessage').textContent = `${imageFiles.length} imagens associadas com sucesso!`;
-      this.renderThumbnails(imageFiles);
-
-      const pageNodes = this.treeManager.root.children.filter(c => c.fileRef);
-      if (pageNodes.length > 0) {
-        this.treeManager.selectNode(pageNodes[0].id);
-      }
-    } else {
-      alert('Nenhum ficheiro de imagem válido encontrado.');
     }
   }
 
@@ -661,10 +618,18 @@ class App {
     return c;
   }
 
+  toggleNodeExpanded(nodeId) {
+    const node = this.treeManager.findNode(this.treeManager.root, nodeId);
+    if (!node) return;
+    node.expanded = !node.expanded;
+    this.renderTree();
+  }
+
   renderNodeRecursive(node) {
     const typeDef = this.schemaManager.getNodeType(node.type);
     const isSelected = node.id === this.treeManager.selectedNodeId;
     const rotation = node.metadata?.rotation || 0;
+    const hasChildren = !!(node.children && node.children.length > 0);
 
     const divNode = document.createElement('div');
     divNode.className = 'tree-node';
@@ -679,16 +644,28 @@ class App {
 
     const rotationBadge = rotation !== 0 ? `<span class="tree-node-badge" style="background:#7c3aed; color:white;">🔄 ${rotation}°</span>` : '';
 
+    const toggleHtml = hasChildren
+      ? `<span class="tree-node-toggle" title="${node.expanded ? 'Colapsar' : 'Expandir'}"><i data-lucide="${node.expanded ? 'chevron-down' : 'chevron-right'}"></i></span>`
+      : `<span class="tree-node-toggle-spacer"></span>`;
+
     divContent.innerHTML = `
+      ${toggleHtml}
       <span class="tree-node-icon"><i data-lucide="${typeDef.icon || 'file'}"></i></span>
       <span class="tree-node-label">${node.label}</span>
       ${rotationBadge}
       <span class="tree-node-badge">${typeDef.namePt}</span>
     `;
 
+    if (hasChildren) {
+      divContent.querySelector('.tree-node-toggle').onclick = (e) => {
+        e.stopPropagation();
+        this.toggleNodeExpanded(node.id);
+      };
+    }
+
     divNode.appendChild(divContent);
 
-    if (node.children && node.children.length > 0 && node.expanded) {
+    if (hasChildren && node.expanded) {
       const divChildren = document.createElement('div');
       divChildren.className = 'tree-children';
       node.children.forEach(child => {
@@ -1144,6 +1121,7 @@ class App {
     document.getElementById('metaCreator').value = node.metadata?.creator || '';
     document.getElementById('metaDate').value = node.metadata?.date || '';
     document.getElementById('metaLanguage').value = node.metadata?.language || 'por';
+    document.getElementById('metaNotes').value = node.metadata?.notes || '';
     document.getElementById('metaRights').value = node.metadata?.rights || '';
 
     const rotation = node.metadata?.rotation || 0;
@@ -1186,6 +1164,7 @@ class App {
       creator: document.getElementById('metaCreator').value,
       date: document.getElementById('metaDate').value,
       language: document.getElementById('metaLanguage').value,
+      notes: document.getElementById('metaNotes').value,
       rights: document.getElementById('metaRights').value
     };
 
@@ -1375,15 +1354,6 @@ class App {
     }
   }
 
-  downloadFile(filename, text, mimeType) {
-    const blob = new Blob([text], { type: mimeType });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    a.click();
-    URL.revokeObjectURL(url);
-  }
 }
 
 document.addEventListener('DOMContentLoaded', () => {
